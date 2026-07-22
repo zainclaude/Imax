@@ -20,7 +20,15 @@ class Notifier:
         if self._client is None:
             from twilio.rest import Client
 
-            self._client = Client(self.cfg.twilio_sid, self.cfg.twilio_token)
+            if self.cfg.has_api_key_auth():
+                # API Key SID + Secret authenticate; Account SID scopes the account.
+                self._client = Client(
+                    self.cfg.twilio_api_key_sid,
+                    self.cfg.twilio_api_key_secret,
+                    self.cfg.twilio_sid,
+                )
+            else:
+                self._client = Client(self.cfg.twilio_sid, self.cfg.twilio_token)
         return self._client
 
     def send(self, body: str) -> list[str]:

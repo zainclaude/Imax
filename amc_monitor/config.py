@@ -64,8 +64,16 @@ class Config:
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "180")))
 
     # Twilio / alerting
+    # Auth — two supported styles:
+    #   1) Account SID (AC…) + Auth Token
+    #   2) API Key SID (SK…) + API Key Secret, together with the Account SID
+    # API keys are the recommended, revocable option.
     twilio_sid: str | None = field(default_factory=lambda: os.getenv("TWILIO_ACCOUNT_SID") or None)
     twilio_token: str | None = field(default_factory=lambda: os.getenv("TWILIO_AUTH_TOKEN") or None)
+    twilio_api_key_sid: str | None = field(default_factory=lambda: os.getenv("TWILIO_API_KEY_SID") or None)
+    twilio_api_key_secret: str | None = field(
+        default_factory=lambda: os.getenv("TWILIO_API_KEY_SECRET") or None
+    )
     twilio_from: str | None = field(default_factory=lambda: os.getenv("TWILIO_FROM") or None)
     messaging_service_sid: str | None = field(
         default_factory=lambda: os.getenv("TWILIO_MESSAGING_SERVICE_SID") or None
@@ -86,6 +94,12 @@ class Config:
     def wants(self, mode: str) -> bool:
         return mode in self.alert_modes
 
+    def has_api_key_auth(self) -> bool:
+        return bool(self.twilio_api_key_sid and self.twilio_api_key_secret and self.twilio_sid)
+
+    def has_auth_token_auth(self) -> bool:
+        return bool(self.twilio_sid and self.twilio_token)
+
     def validate_for_alerts(self) -> list[str]:
         problems = []
         if not self.theatre_id:
@@ -93,8 +107,11 @@ class Config:
         if not self.alert_numbers:
             problems.append("ALERT_NUMBERS is empty (need you + your wife).")
         using_service = bool(self.messaging_service_sid)
-        if not (self.twilio_sid and self.twilio_token):
-            problems.append("Twilio credentials missing.")
+        if not (self.has_api_key_auth() or self.has_auth_token_auth()):
+            problems.append(
+                "Twilio auth incomplete. Provide either TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN, "
+                "or TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET + TWILIO_ACCOUNT_SID."
+            )
         if not using_service and not self.twilio_from:
             problems.append("TWILIO_FROM missing (or set TWILIO_MESSAGING_SERVICE_SID).")
         return problems
