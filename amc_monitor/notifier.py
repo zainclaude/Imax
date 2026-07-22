@@ -38,6 +38,19 @@ class Notifier:
         return sids
 
 
+def format_new_date_alert(movie: str, fmt: str, pretty_date: str, count: int, link: str | None) -> str:
+    shows = "showtime" if count == 1 else "showtimes"
+    lines = [
+        f"🆕 New date bookable: {pretty_date}",
+        f"{movie} — {fmt} @ AMC Lincoln Square",
+        f"{count} {shows} just opened.",
+    ]
+    if link:
+        lines.append(link)
+    lines.append("Fresh seats — go grab them.")
+    return "\n".join(lines)
+
+
 def format_alert(movie: str, fmt: str, when: str, link: str | None, has_pair: bool) -> str:
     pair_note = "✅ adjacent pair open" if has_pair else "seats live"
     lines = [

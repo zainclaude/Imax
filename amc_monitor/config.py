@@ -26,6 +26,29 @@ def _numbers(raw: str | None) -> list[str]:
     return [n.strip() for n in raw.split(",") if n.strip()]
 
 
+# Alert modes (choose one or more, comma-separated in ALERT_MODE):
+#   new_date       -> text when a brand-new bookable calendar date appears
+#                     (the booking horizon extends, e.g. Aug 16 was the max, now
+#                     Aug 17 shows up). Usually the signal that matters most.
+#   adjacent_pair  -> text when a showtime has two open seats next to each other.
+#   any_showtime   -> text on any newly-seen showtime slot, regardless of the above.
+VALID_MODES = {"new_date", "adjacent_pair", "any_showtime"}
+
+
+def _alert_modes() -> list[str]:
+    raw = os.getenv("ALERT_MODE")
+    if raw:
+        modes = [m.strip().lower() for m in raw.split(",") if m.strip()]
+        modes = [m for m in modes if m in VALID_MODES]
+        if modes:
+            return modes
+    # Back-compat: honor the old REQUIRE_ADJACENT_PAIR flag if ALERT_MODE is unset.
+    if os.getenv("REQUIRE_ADJACENT_PAIR") is not None and _bool("REQUIRE_ADJACENT_PAIR", True):
+        return ["adjacent_pair"]
+    # Default: the horizon-extension alert the run really cares about.
+    return ["new_date"]
+
+
 @dataclass
 class Config:
     # AMC data source
@@ -35,7 +58,7 @@ class Config:
     # What to watch
     movie_query: str = field(default_factory=lambda: os.getenv("MOVIE_QUERY", "Odyssey"))
     format_match: str = field(default_factory=lambda: os.getenv("FORMAT_MATCH", "70"))
-    require_adjacent_pair: bool = field(default_factory=lambda: _bool("REQUIRE_ADJACENT_PAIR", True))
+    alert_modes: list[str] = field(default_factory=_alert_modes)
 
     # Politeness
     poll_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_SECONDS", "180")))
@@ -59,6 +82,9 @@ class Config:
     def humane_poll_seconds(self) -> int:
         """Enforce a polite floor. This monitor is a heads-up tool, not a scraper race."""
         return max(120, self.poll_seconds)
+
+    def wants(self, mode: str) -> bool:
+        return mode in self.alert_modes
 
     def validate_for_alerts(self) -> list[str]:
         problems = []

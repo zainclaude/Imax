@@ -17,21 +17,28 @@ import time
 
 from .amc_client import AmcClient, AntiBotChallenge, Showtime, polite_fetch
 from .config import Config
-from .notifier import Notifier, format_alert
+from .dates import local_date_of, pretty_date
+from .notifier import Notifier, format_alert, format_new_date_alert
 from .seatmap import fetch_seatmap, find_adjacent_pairs
 from .sightings import new_sighting, record_sighting
 
 
+def _fresh_state() -> dict:
+    return {"alerted": {}, "seen": {}, "seen_dates": [], "dates_seeded": False}
+
+
 def _load_state(path: str) -> dict:
     if not os.path.exists(path):
-        return {"alerted": {}, "seen": {}}
+        return _fresh_state()
     try:
         with open(path) as f:
             state = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return {"alerted": {}, "seen": {}}
+        return _fresh_state()
     state.setdefault("alerted", {})
     state.setdefault("seen", {})  # showtime_id -> first_seen epoch
+    state.setdefault("seen_dates", [])  # list of 'YYYY-MM-DD' bookable dates we've observed
+    state.setdefault("dates_seeded", False)  # have we captured the initial horizon yet?
     return state
 
 
@@ -46,66 +53,141 @@ def _matches_format(st: Showtime, needle: str) -> bool:
     return needle.lower() in (st.format_label or "").lower()
 
 
+def _emit(notifier: Notifier | None, body: str) -> bool:
+    """Print an alert and, if configured, send the text. True if it 'went out'."""
+    print(f"[alert] {body!r}")
+    if notifier is None:
+        return True  # dry-run: treat as delivered so state advances
+    try:
+        notifier.send(body)
+        return True
+    except Exception as e:
+        print(f"[error] failed to send text: {e}", file=sys.stderr)
+        return False
+
+
+def _record_sightings(cfg: Config, state: dict, candidates: list[Showtime]) -> tuple[set[str], bool]:
+    """Stamp first-sightings for cadence learning. Returns (newly_seen_ids, changed)."""
+    newly_seen: set[str] = set()
+    changed = False
+    for st in candidates:
+        if st.id not in state["seen"]:
+            sighting = new_sighting(st.id, st.movie_title, st.format_label, st.when_iso)
+            record_sighting(cfg.sightings_path, sighting)
+            state["seen"][st.id] = sighting.first_seen_epoch
+            newly_seen.add(st.id)
+            changed = True
+            print(f"[new] first sighting of showtime {st.id} ({st.format_label} {st.when_iso})")
+    return newly_seen, changed
+
+
+def _alert_new_dates(cfg: Config, notifier, state: dict, candidates: list[Showtime]) -> tuple[int, bool]:
+    """Text once per brand-new bookable calendar date (the horizon extending)."""
+    by_date: dict[str, list[Showtime]] = {}
+    for st in candidates:
+        d = local_date_of(st.when_iso)
+        if d:
+            by_date.setdefault(d, []).append(st)
+
+    seen_dates = set(state["seen_dates"])
+
+    # First run: capture the current horizon silently. We only want to hear about
+    # dates that appear *after* we start watching, not every date already for sale.
+    if not state["dates_seeded"]:
+        state["seen_dates"] = sorted(seen_dates | set(by_date))
+        state["dates_seeded"] = True
+        if by_date:
+            print(f"[seed] current booking horizon captured: {max(by_date)} (no alert on initial dates)")
+        return 0, True
+
+    sent = 0
+    changed = False
+    for d in sorted(by_date):
+        if d in seen_dates:
+            continue
+        shows = by_date[d]
+        link = next((s.purchase_url or s.seatmap_url for s in shows), None)
+        fmt = shows[0].format_label or "70mm"
+        body = format_new_date_alert(shows[0].movie_title, fmt, pretty_date(d), len(shows), link)
+        if _emit(notifier, body):
+            state["seen_dates"] = sorted(set(state["seen_dates"]) | {d})
+            seen_dates.add(d)
+            sent += 1
+            changed = True
+    return sent, changed
+
+
+def _alert_adjacent_pairs(cfg: Config, notifier, state: dict, candidates: list[Showtime]) -> tuple[int, bool]:
+    """Text when a showtime has two open seats next to each other."""
+    sent = 0
+    changed = False
+    for st in candidates:
+        if not st.seatmap_url:
+            continue
+        try:
+            seats = fetch_seatmap(st.seatmap_url, cfg.amc_api_key)
+            pairs = find_adjacent_pairs(seats)
+        except AntiBotChallenge:
+            raise
+        except Exception as e:  # seat map is best-effort; don't let it kill the loop
+            print(f"[warn] seat map read failed for {st.id}: {e}", file=sys.stderr)
+            continue
+        if not pairs:
+            continue
+
+        a, b = pairs[0]
+        sig = f"{st.key()}::pair"
+        if sig in state["alerted"]:
+            continue
+        fmt = f"{st.format_label or '70mm'} (seats {a.row}{a.col}-{b.col})"
+        link = st.purchase_url or st.seatmap_url
+        body = format_alert(st.movie_title, fmt, st.when_iso or "showtime", link, True)
+        if _emit(notifier, body):
+            state["alerted"][sig] = int(time.time())
+            sent += 1
+            changed = True
+    return sent, changed
+
+
+def _alert_any_showtime(cfg: Config, notifier, state: dict, candidates: list[Showtime], newly_seen: set[str]) -> tuple[int, bool]:
+    """Text on any newly-seen showtime slot."""
+    sent = 0
+    changed = False
+    for st in candidates:
+        if st.id not in newly_seen:
+            continue
+        sig = f"{st.key()}::live"
+        if sig in state["alerted"]:
+            continue
+        link = st.purchase_url or st.seatmap_url
+        body = format_alert(st.movie_title, st.format_label or "70mm", st.when_iso or "showtime", link, False)
+        if _emit(notifier, body):
+            state["alerted"][sig] = int(time.time())
+            sent += 1
+            changed = True
+    return sent, changed
+
+
 def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state: dict) -> tuple[int, bool]:
     """One poll. Returns (alerts_sent, state_changed)."""
     showtimes = polite_fetch(client, cfg.movie_query)
     candidates = [st for st in showtimes if _matches_format(st, cfg.format_match)]
 
+    newly_seen, changed = _record_sightings(cfg, state, candidates)
     sent = 0
-    changed = False
-    for st in candidates:
-        # Cadence learning: the first time we ever see this slot, stamp it. This is
-        # what lets `python -m amc_monitor.patterns` reveal when AMC actually drops
-        # new showtimes — independent of seat availability or whether we alert.
-        if st.id not in state["seen"]:
-            sighting = new_sighting(st.id, st.movie_title, st.format_label, st.when_iso)
-            record_sighting(cfg.sightings_path, sighting)
-            state["seen"][st.id] = sighting.first_seen_epoch
-            changed = True
-            print(f"[new] first sighting of showtime {st.id} ({st.format_label} {st.when_iso})")
 
-        # Signature captures whether the adjacent-pair condition flipped, so a
-        # showtime that opens up a pair later can re-alert once.
-        has_pair = False
-        pair_label = ""
-        if st.seatmap_url:
-            try:
-                seats = fetch_seatmap(st.seatmap_url, cfg.amc_api_key)
-                pairs = find_adjacent_pairs(seats)
-                has_pair = bool(pairs)
-                if pairs:
-                    a, b = pairs[0]
-                    pair_label = f"{a.row}{a.col}-{b.col}"
-            except AntiBotChallenge:
-                raise
-            except Exception as e:  # seat map is best-effort; don't let it kill the loop
-                print(f"[warn] seat map read failed for {st.id}: {e}", file=sys.stderr)
-
-        if cfg.require_adjacent_pair and st.seatmap_url and not has_pair:
-            continue
-
-        sig = f"{st.key()}::{'pair' if has_pair else 'live'}"
-        if sig in state["alerted"]:
-            continue
-
-        link = st.purchase_url or st.seatmap_url
-        when = st.when_iso or "showtime"
-        fmt = st.format_label or "70mm"
-        if pair_label:
-            fmt = f"{fmt} (seats {pair_label})"
-
-        body = format_alert(st.movie_title, fmt, when, link, has_pair)
-        print(f"[alert] {body!r}")
-        if notifier:
-            try:
-                notifier.send(body)
-            except Exception as e:
-                print(f"[error] failed to send text: {e}", file=sys.stderr)
-                continue
-
-        state["alerted"][sig] = int(time.time())
-        changed = True
-        sent += 1
+    if cfg.wants("new_date"):
+        n, c = _alert_new_dates(cfg, notifier, state, candidates)
+        sent += n
+        changed = changed or c
+    if cfg.wants("adjacent_pair"):
+        n, c = _alert_adjacent_pairs(cfg, notifier, state, candidates)
+        sent += n
+        changed = changed or c
+    if cfg.wants("any_showtime"):
+        n, c = _alert_any_showtime(cfg, notifier, state, candidates, newly_seen)
+        sent += n
+        changed = changed or c
 
     return sent, changed
 
@@ -124,7 +206,7 @@ def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:
 
     source = "official API" if cfg.amc_api_key else "public page (best-effort)"
     print(f"Watching '{cfg.movie_query}' [{cfg.format_match}] at theatre {cfg.theatre_id} via {source}.")
-    print(f"Poll every ~{cfg.humane_poll_seconds()}s. Adjacent-pair required: {cfg.require_adjacent_pair}.")
+    print(f"Poll every ~{cfg.humane_poll_seconds()}s. Alert modes: {', '.join(cfg.alert_modes)}.")
 
     while True:
         try:

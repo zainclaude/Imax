@@ -26,15 +26,31 @@ If AMC blocks polite automated reads, the correct move is to use their
 **official developer API** (https://developers.amc.com/) rather than to evade the
 block. The client below is built to prefer that API when a key is present.
 
+## Alert modes
+
+Pick what you want to be texted about with `ALERT_MODE` (one or more, comma-separated):
+
+| Mode | Texts you when… | Good for |
+|---|---|---|
+| `new_date` *(default)* | a **brand-new bookable date** appears — the booking horizon extends (e.g. Aug 16 was the furthest-out date, then Aug 17 shows up) | catching a whole new day / fresh batch of seats dropping — usually the signal that matters most |
+| `adjacent_pair` | a showtime has **two open seats next to each other** | grabbing two seats together on a day that's already on sale |
+| `any_showtime` | **any** new showtime slot appears | maximum awareness, more noise |
+
+Example — get both: `ALERT_MODE=new_date,adjacent_pair`
+
+**How `new_date` avoids spamming you on startup:** the first poll silently records
+the *current* horizon (every date already for sale). You only get a text when a
+date appears that wasn't there when the monitor started watching. Dates are
+computed in **Eastern time**, so an overnight 2 a.m. show lands on the correct
+calendar day.
+
 ## How it works
 
 1. Every few minutes, query AMC for *Odyssey* showtimes at Lincoln Square.
-2. Detect **newly appeared** showtimes (state is remembered between runs).
-3. For each new showtime, look at the seat map for any **two adjacent open
-   seats**.
-4. Send a group text with a one-tap deep link to that showtime's seat-selection
-   page.
-5. Stay quiet otherwise.
+2. Stamp the first-sighting of every slot (for cadence learning, below).
+3. Fire whichever alerts your `ALERT_MODE` asks for (new date / adjacent pair /
+   any showtime), each de-duplicated so you're texted once per event.
+4. Send a group text with a one-tap deep link, then stay quiet otherwise.
 
 ## Setup
 
@@ -53,7 +69,7 @@ python -m amc_monitor.monitor
 | `MOVIE_QUERY` | Title match, default `Odyssey`. |
 | `FORMAT_MATCH` | Format substring to require, default `70`. Matches "70mm" / "IMAX 70mm". |
 | `POLL_SECONDS` | Base poll interval. Default `180` (3 min). Please keep this humane. |
-| `REQUIRE_ADJACENT_PAIR` | `true` to only alert when 2 seats are open next to each other. |
+| `ALERT_MODE` | What to text you about: `new_date` (default), `adjacent_pair`, `any_showtime`. Comma-separate to combine. See **Alert modes** above. |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio credentials. |
 | `TWILIO_FROM` | Your Twilio sending number. |
 | `ALERT_NUMBERS` | Comma-separated recipient numbers (you + your wife). |
