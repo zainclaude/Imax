@@ -1,0 +1,80 @@
+# AMC 70mm Odyssey Monitor (Lincoln Square)
+
+A **polite availability notifier** for the 70mm IMAX presentation of *The Odyssey*
+at **AMC Lincoln Square 13** in NYC.
+
+It does **one** thing: watches for the showtimes to appear (or for adjacent seat
+pairs to open up), and then sends a text to you and your wife with a direct link
+so **you** can log in and book. It is a heads-up tool, not an auto-buyer.
+
+## What this is NOT
+
+This project deliberately does **not**:
+
+- bypass, solve, or evade Cloudflare / bot-mitigation challenges,
+- spoof or rotate browser fingerprints to look like many users,
+- automate checkout or purchasing,
+- hammer AMC with high-frequency requests.
+
+Automating purchases against AMC violates their Terms of Service and defeats the
+anti-bot layer on purpose. This tool stays on the right side of that line: it
+polls a public endpoint on a **human cadence**, backs off politely when asked
+(`429`/`503`), identifies itself honestly, and just pings you. You remain the
+human who logs in and checks out.
+
+If AMC blocks polite automated reads, the correct move is to use their
+**official developer API** (https://developers.amc.com/) rather than to evade the
+block. The client below is built to prefer that API when a key is present.
+
+## How it works
+
+1. Every few minutes, query AMC for *Odyssey* showtimes at Lincoln Square.
+2. Detect **newly appeared** showtimes (state is remembered between runs).
+3. For each new showtime, look at the seat map for any **two adjacent open
+   seats**.
+4. Send a group text with a one-tap deep link to that showtime's seat-selection
+   page.
+5. Stay quiet otherwise.
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env      # fill in the values
+python -m amc_monitor.monitor
+```
+
+### Configuration (`.env`)
+
+| Variable | Meaning |
+|---|---|
+| `AMC_API_KEY` | Optional. AMC developer API key. Strongly preferred over HTML scraping. |
+| `AMC_THEATRE_ID` | AMC theatre id for Lincoln Square 13 (see note below). |
+| `MOVIE_QUERY` | Title match, default `Odyssey`. |
+| `FORMAT_MATCH` | Format substring to require, default `70`. Matches "70mm" / "IMAX 70mm". |
+| `POLL_SECONDS` | Base poll interval. Default `180` (3 min). Please keep this humane. |
+| `REQUIRE_ADJACENT_PAIR` | `true` to only alert when 2 seats are open next to each other. |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio credentials. |
+| `TWILIO_FROM` | Your Twilio sending number. |
+| `ALERT_NUMBERS` | Comma-separated recipient numbers (you + your wife). |
+| `TWILIO_MESSAGING_SERVICE_SID` | Optional. Set this to use a Group MMS thread. |
+
+> **Theatre id:** Lincoln Square's AMC id is stable but AMC occasionally renumbers.
+> With an `AMC_API_KEY` set, run `python -m amc_monitor.find_theatre "Lincoln Square"`
+> to confirm the current id.
+
+## Group text
+
+Two options, both handled by `notifier.py`:
+
+- **Simple (default):** the same SMS is sent to each number in `ALERT_NUMBERS`.
+  Reliable everywhere; each person gets a 1:1 text.
+- **True group thread:** set `TWILIO_MESSAGING_SERVICE_SID` to a Twilio
+  Conversations / Group MMS service and both recipients share one MMS thread.
+
+## Running it for real
+
+- Locally with `python -m amc_monitor.monitor` (foreground) or under `systemd` /
+  `launchd`.
+- Or as a cron / scheduled job that runs one poll per invocation
+  (`python -m amc_monitor.monitor --once`).
