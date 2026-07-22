@@ -74,6 +74,11 @@ class Config:
     twilio_api_key_secret: str | None = field(
         default_factory=lambda: os.getenv("TWILIO_API_KEY_SECRET") or None
     )
+    # OAuth 2.0 client-credentials (GA). Still needs the Account SID for the Messages URL path.
+    twilio_client_id: str | None = field(default_factory=lambda: os.getenv("TWILIO_CLIENT_ID") or None)
+    twilio_client_secret: str | None = field(
+        default_factory=lambda: os.getenv("TWILIO_CLIENT_SECRET") or None
+    )
     twilio_from: str | None = field(default_factory=lambda: os.getenv("TWILIO_FROM") or None)
     messaging_service_sid: str | None = field(
         default_factory=lambda: os.getenv("TWILIO_MESSAGING_SERVICE_SID") or None
@@ -100,6 +105,9 @@ class Config:
     def has_auth_token_auth(self) -> bool:
         return bool(self.twilio_sid and self.twilio_token)
 
+    def has_oauth_auth(self) -> bool:
+        return bool(self.twilio_client_id and self.twilio_client_secret and self.twilio_sid)
+
     def validate_for_alerts(self) -> list[str]:
         problems = []
         if not self.theatre_id:
@@ -107,11 +115,19 @@ class Config:
         if not self.alert_numbers:
             problems.append("ALERT_NUMBERS is empty (need you + your wife).")
         using_service = bool(self.messaging_service_sid)
-        if not (self.has_api_key_auth() or self.has_auth_token_auth()):
-            problems.append(
-                "Twilio auth incomplete. Provide either TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN, "
-                "or TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET + TWILIO_ACCOUNT_SID."
-            )
+        if not (self.has_api_key_auth() or self.has_auth_token_auth() or self.has_oauth_auth()):
+            if self.twilio_client_id and self.twilio_client_secret and not self.twilio_sid:
+                problems.append(
+                    "TWILIO_CLIENT_ID/SECRET found but TWILIO_ACCOUNT_SID is missing — OAuth "
+                    "replaces the auth token, but the Account SID (AC…) is still required "
+                    "for the Messages API URL. It's on your Twilio console dashboard."
+                )
+            else:
+                problems.append(
+                    "Twilio auth incomplete. Provide one of: TWILIO_CLIENT_ID + TWILIO_CLIENT_SECRET "
+                    "+ TWILIO_ACCOUNT_SID (OAuth), TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET + "
+                    "TWILIO_ACCOUNT_SID, or TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN."
+                )
         if not using_service and not self.twilio_from:
             problems.append("TWILIO_FROM missing (or set TWILIO_MESSAGING_SERVICE_SID).")
         return problems
