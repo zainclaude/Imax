@@ -19,16 +19,20 @@ from .amc_client import AmcClient, AntiBotChallenge, Showtime, polite_fetch
 from .config import Config
 from .notifier import Notifier, format_alert
 from .seatmap import fetch_seatmap, find_adjacent_pairs
+from .sightings import new_sighting, record_sighting
 
 
 def _load_state(path: str) -> dict:
     if not os.path.exists(path):
-        return {"alerted": {}}
+        return {"alerted": {}, "seen": {}}
     try:
         with open(path) as f:
-            return json.load(f)
+            state = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return {"alerted": {}}
+        return {"alerted": {}, "seen": {}}
+    state.setdefault("alerted", {})
+    state.setdefault("seen", {})  # showtime_id -> first_seen epoch
+    return state
 
 
 def _save_state(path: str, state: dict) -> None:
@@ -42,13 +46,24 @@ def _matches_format(st: Showtime, needle: str) -> bool:
     return needle.lower() in (st.format_label or "").lower()
 
 
-def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state: dict) -> int:
-    """One poll. Returns number of alerts sent."""
+def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state: dict) -> tuple[int, bool]:
+    """One poll. Returns (alerts_sent, state_changed)."""
     showtimes = polite_fetch(client, cfg.movie_query)
     candidates = [st for st in showtimes if _matches_format(st, cfg.format_match)]
 
     sent = 0
+    changed = False
     for st in candidates:
+        # Cadence learning: the first time we ever see this slot, stamp it. This is
+        # what lets `python -m amc_monitor.patterns` reveal when AMC actually drops
+        # new showtimes — independent of seat availability or whether we alert.
+        if st.id not in state["seen"]:
+            sighting = new_sighting(st.id, st.movie_title, st.format_label, st.when_iso)
+            record_sighting(cfg.sightings_path, sighting)
+            state["seen"][st.id] = sighting.first_seen_epoch
+            changed = True
+            print(f"[new] first sighting of showtime {st.id} ({st.format_label} {st.when_iso})")
+
         # Signature captures whether the adjacent-pair condition flipped, so a
         # showtime that opens up a pair later can re-alert once.
         has_pair = False
@@ -89,9 +104,10 @@ def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state:
                 continue
 
         state["alerted"][sig] = int(time.time())
+        changed = True
         sent += 1
 
-    return sent
+    return sent, changed
 
 
 def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:
@@ -112,8 +128,8 @@ def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:
 
     while True:
         try:
-            n = check_once(cfg, client, notifier, state)
-            if n:
+            n, changed = check_once(cfg, client, notifier, state)
+            if changed:
                 _save_state(cfg.state_path, state)
         except AntiBotChallenge as e:
             # We hit the wall on purpose-respecting terms. Stop hammering.

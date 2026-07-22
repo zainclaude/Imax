@@ -72,6 +72,33 @@ Two options, both handled by `notifier.py`:
 - **True group thread:** set `TWILIO_MESSAGING_SERVICE_SID` to a Twilio
   Conversations / Group MMS service and both recipients share one MMS thread.
 
+## Learning the drop cadence
+
+AMC doesn't publish when it adds new Odyssey 70mm showtimes, and there's no fixed
+time — but there *is* a per-theatre pattern (often overnight ET, midweek). The
+monitor learns it for you: every time a slot first appears, it stamps the moment
+to `.amc_monitor_sightings.jsonl`. After a few days, run:
+
+```bash
+python -m amc_monitor.patterns
+```
+
+to see the drops bucketed by weekday and hour in Eastern time, e.g.:
+
+```
+By weekday:
+  Tue    4  ████████████████████████
+  Wed    5  ██████████████████████████████
+By hour (ET):
+  02:00    5  ██████████████████████████████
+  03:00    2  ████████████
+
+Likely drop window: around Wed, hours 02:00, 03:00, 01:00 ET.
+```
+
+Now you know when to actually be ready — and you can keep the poll rate polite the
+rest of the week instead of hammering AMC around the clock.
+
 ## Running it for real
 
 - Locally with `python -m amc_monitor.monitor` (foreground) or under `systemd` /

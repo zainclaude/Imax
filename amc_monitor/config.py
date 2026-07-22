@@ -51,6 +51,10 @@ class Config:
 
     # State
     state_path: str = field(default_factory=lambda: os.getenv("STATE_PATH", ".amc_monitor_state.json"))
+    # Append-only log of when each showtime slot was first seen (for cadence learning).
+    sightings_path: str = field(
+        default_factory=lambda: os.getenv("SIGHTINGS_PATH", ".amc_monitor_sightings.jsonl")
+    )
 
     def humane_poll_seconds(self) -> int:
         """Enforce a polite floor. This monitor is a heads-up tool, not a scraper race."""
