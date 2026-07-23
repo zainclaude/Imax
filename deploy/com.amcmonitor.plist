@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the AMC 70mm Odyssey monitor (macOS).
+
+  Install:
+    cp deploy/com.amcmonitor.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.amcmonitor.plist
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.amcmonitor.plist
+
+  Adjust the two /Users/zainali/imax paths below if the repo lives elsewhere.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amcmonitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/zainali/imax/.venv/bin/python</string>
+        <string>-m</string>
+        <string>amc_monitor.monitor</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/zainali/imax</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/zainali/Library/Logs/amc-monitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/zainali/Library/Logs/amc-monitor.log</string>
+</dict>
+</plist>

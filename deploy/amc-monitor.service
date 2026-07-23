@@ -1,0 +1,35 @@
+# systemd unit for the AMC 70mm Odyssey monitor (Linux VPS / Raspberry Pi).
+#
+# Install:
+#   sudo cp deploy/amc-monitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now amc-monitor
+#
+# Logs:   journalctl -u amc-monitor -f
+# Status: systemctl status amc-monitor
+#
+# Assumes the repo is cloned at /opt/imax with a filled-in .env and a venv at
+# /opt/imax/.venv (see DEPLOY.md). Adjust paths/user if yours differ.
+
+[Unit]
+Description=AMC 70mm Odyssey seat-availability monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=amcbot
+WorkingDirectory=/opt/imax
+ExecStart=/opt/imax/.venv/bin/python -m amc_monitor.monitor
+Restart=on-failure
+RestartSec=60
+
+# Hygiene: the process needs nothing but network + its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/imax
+
+[Install]
+WantedBy=multi-user.target
