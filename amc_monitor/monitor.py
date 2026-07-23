@@ -210,6 +210,8 @@ def send_test_text(cfg: Config) -> None:
     )
     notifier = Notifier(cfg)
     recipients = cfg.alert_numbers * cfg.has_twilio_channel() + cfg.alert_emails * cfg.has_email_channel()
+    if cfg.has_ntfy_channel():
+        recipients.append(f"ntfy topic '{cfg.ntfy_topic}'")
     print(f"Sending test alert to: {', '.join(recipients)} …")
     try:
         ids = notifier.send(body, subject="🎬 Odyssey 70mm bot — test alert")

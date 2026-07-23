@@ -94,6 +94,11 @@ class Config:
     smtp_pass: str | None = field(default_factory=lambda: os.getenv("SMTP_PASS") or None)
     alert_emails: list[str] = field(default_factory=lambda: _numbers(os.getenv("ALERT_EMAILS")))
 
+    # ntfy push channel: both phones install the ntfy app and subscribe to this
+    # topic. Topic names are effectively passwords — use a long random one.
+    ntfy_topic: str | None = field(default_factory=lambda: os.getenv("NTFY_TOPIC") or None)
+    ntfy_server: str = field(default_factory=lambda: os.getenv("NTFY_SERVER", "https://ntfy.sh"))
+
     # State
     state_path: str = field(default_factory=lambda: os.getenv("STATE_PATH", ".amc_monitor_state.json"))
     # Append-only log of when each showtime slot was first seen (for cadence learning).
@@ -125,13 +130,16 @@ class Config:
     def has_email_channel(self) -> bool:
         return bool(self.smtp_user and self.smtp_pass and self.alert_emails)
 
+    def has_ntfy_channel(self) -> bool:
+        return bool(self.ntfy_topic)
+
     def validate_for_alerts(self) -> list[str]:
         problems = []
         if not self.theatre_id:
             problems.append("AMC_THEATRE_ID is not set.")
 
-        # At least one working alert channel is required; both is fine.
-        if self.has_twilio_channel() or self.has_email_channel():
+        # At least one working alert channel is required; several is fine.
+        if self.has_twilio_channel() or self.has_email_channel() or self.has_ntfy_channel():
             return problems
 
         if self.twilio_client_id and self.twilio_client_secret and not self.twilio_sid:
@@ -153,7 +161,8 @@ class Config:
             problems.append(f"Email channel incomplete — missing: {', '.join(missing)}.")
         else:
             problems.append(
-                "No alert channel configured. Set up email (SMTP_USER + SMTP_PASS + ALERT_EMAILS) "
-                "and/or Twilio SMS (auth + TWILIO_FROM + ALERT_NUMBERS)."
+                "No alert channel configured. Set up ntfy push (NTFY_TOPIC), email "
+                "(SMTP_USER + SMTP_PASS + ALERT_EMAILS), and/or Twilio SMS "
+                "(auth + TWILIO_FROM + ALERT_NUMBERS)."
             )
         return problems

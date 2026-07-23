@@ -119,6 +119,27 @@ def _send_email(cfg: Config, subject: str, body: str) -> list[str]:
     return [addr for addr in cfg.alert_emails if addr not in refused]
 
 
+def _send_ntfy(cfg: Config, title: str, body: str) -> str:
+    """Publish a high-priority push to the configured ntfy topic.
+
+    Anyone subscribed to the topic in the ntfy app gets an instant notification.
+    Returns the topic URL as the delivery id.
+    """
+    url = f"{cfg.ntfy_server.rstrip('/')}/{cfg.ntfy_topic}"
+    resp = requests.post(
+        url,
+        data=body.encode("utf-8"),
+        headers={
+            "Title": title.encode("utf-8"),
+            "Priority": "high",
+            "Tags": "clapper",
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return url
+
+
 class Notifier:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -192,6 +213,12 @@ class Notifier:
                 ids.extend(_send_email(self.cfg, subject, body))
             except Exception as e:
                 errors.append(f"email: {e}")
+
+        if self.cfg.has_ntfy_channel():
+            try:
+                ids.append(_send_ntfy(self.cfg, subject, body))
+            except Exception as e:
+                errors.append(f"ntfy: {e}")
 
         if errors and not ids:
             raise RuntimeError("all alert channels failed — " + "; ".join(errors))
