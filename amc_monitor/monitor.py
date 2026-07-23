@@ -121,11 +121,14 @@ def _alert_new_dates(cfg: Config, notifier, state: dict, candidates: list[Showti
 
     # First run: capture the current horizon silently. We only want to hear about
     # dates that appear *after* we start watching, not every date already for sale.
+    # A run that saw NOTHING must not mark itself seeded — that would freeze the
+    # monitor on an empty horizon (e.g. when the data source was briefly broken).
     if not state["dates_seeded"]:
+        if not by_date:
+            return 0, False
         state["seen_dates"] = sorted(seen_dates | set(by_date))
         state["dates_seeded"] = True
-        if by_date:
-            print(f"[seed] current booking horizon captured: {max(by_date)} (no alert on initial dates)")
+        print(f"[seed] current booking horizon captured: {max(by_date)} (no alert on initial dates)")
         return 0, True
 
     sent = 0
@@ -226,6 +229,10 @@ def _scan_dated_pages(cfg: Config, client: AmcClient, state: dict) -> list[Showt
         ]
 
     out: list[Showtime] = []
+    # Re-seed if the flag is set but no dates were ever captured (e.g. stale
+    # state from a run whose data source was broken).
+    if state["dates_seeded"] and not state["seen_dates"]:
+        state["dates_seeded"] = False
     if not state["dates_seeded"]:
         d = date.today()
         empty_streak = 0

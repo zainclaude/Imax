@@ -108,6 +108,21 @@ def test_seed_scan_walks_until_horizon(_sleep, tmp_path):
 
 
 @mock.patch("time.sleep")
+def test_stale_seeded_state_with_no_dates_reseeds(_sleep, tmp_path):
+    cfg = _cfg()
+    cfg.sightings_path = str(tmp_path / "s.jsonl")
+    state = _fresh_state()
+    state["dates_seeded"] = True  # stale flag from a broken-source run
+    state["seen_dates"] = []
+
+    client = FakeDatedClient({})
+    _scan_dated_pages(cfg, client, state)
+
+    assert state["dates_seeded"] is False  # flag cleared
+    assert len(client.fetches) >= 3  # it actually walked days again
+
+
+@mock.patch("time.sleep")
 def test_poll_checks_only_day_after_horizon(_sleep, tmp_path):
     cfg = _cfg()
     cfg.sightings_path = str(tmp_path / "s.jsonl")

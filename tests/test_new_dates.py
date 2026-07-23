@@ -47,6 +47,21 @@ def test_pretty_date():
     assert pretty_date("2026-08-17") == "Mon Aug 17"
 
 
+def test_empty_first_run_does_not_mark_seeded():
+    cfg = Config()
+    state = _fresh_state()
+    notifier = FakeNotifier()
+
+    sent, changed = _alert_new_dates(cfg, notifier, state, [])
+
+    assert sent == 0
+    assert state["dates_seeded"] is False  # must retry seeding next poll
+    # A later poll that DOES see showtimes seeds silently as normal.
+    _alert_new_dates(cfg, notifier, state, [_show("a", "2026-08-16T19:00:00")])
+    assert state["dates_seeded"] is True
+    assert notifier.bodies == []
+
+
 def test_first_run_seeds_horizon_without_alerting():
     cfg = Config()
     state = _fresh_state()
