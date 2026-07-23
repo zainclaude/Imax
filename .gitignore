@@ -6,3 +6,4 @@ __pycache__/
 .venv/
 venv/
 probe_*.html
+*.har
