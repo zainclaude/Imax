@@ -24,7 +24,14 @@ from .sightings import new_sighting, record_sighting
 
 
 def _fresh_state() -> dict:
-    return {"alerted": {}, "seen": {}, "seen_dates": [], "dates_seeded": False}
+    return {
+        "alerted": {},
+        "seen": {},
+        "seen_dates": [],
+        "dates_seeded": False,
+        "polls_since_heartbeat": 0,
+        "last_heartbeat_date": None,
+    }
 
 
 def _load_state(path: str) -> dict:
@@ -39,6 +46,8 @@ def _load_state(path: str) -> dict:
     state.setdefault("seen", {})  # showtime_id -> first_seen epoch
     state.setdefault("seen_dates", [])  # list of 'YYYY-MM-DD' bookable dates we've observed
     state.setdefault("dates_seeded", False)  # have we captured the initial horizon yet?
+    state.setdefault("polls_since_heartbeat", 0)
+    state.setdefault("last_heartbeat_date", None)
     return state
 
 
@@ -192,6 +201,77 @@ def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state:
     return sent, changed
 
 
+def _maybe_heartbeat(cfg: Config, notifier: Notifier | None, state: dict) -> bool:
+    """Once a day at HEARTBEAT_HOUR (ET), push a proof-of-life status.
+
+    If this stops arriving, you know the monitor is down — the silence is the
+    signal. Returns True if state changed.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    if cfg.heartbeat_hour is None:
+        return False
+    now = datetime.now(ZoneInfo("America/New_York"))
+    today = now.date().isoformat()
+    if now.hour < cfg.heartbeat_hour or state["last_heartbeat_date"] == today:
+        return False
+
+    horizon = max(state["seen_dates"]) if state["seen_dates"] else "none seen yet"
+    body = (
+        f"✅ Odyssey bot alive — watching AMC Lincoln Square.\n"
+        f"Booking horizon: {horizon}. "
+        f"Polls since last heartbeat: {state['polls_since_heartbeat']}.\n"
+        f"No news is no new dates — you'll hear immediately when one drops."
+    )
+    print(f"[heartbeat] {body!r}")
+    if notifier:
+        try:
+            notifier.send(body, subject="✅ Odyssey bot daily check-in")
+        except Exception as e:
+            print(f"[warn] heartbeat send failed: {e}", file=sys.stderr)
+            return False
+    state["last_heartbeat_date"] = today
+    state["polls_since_heartbeat"] = 0
+    return True
+
+
+def simulate_drop(cfg: Config) -> None:
+    """Fire a realistic fake 'new date' alert through the real channels.
+
+    Proves the full alert pipeline (formatting -> Twilio/email/ntfy -> phones)
+    without touching monitor state, so a real drop on the same date still alerts.
+    """
+    from datetime import date, timedelta
+
+    problems = cfg.validate_for_alerts()
+    problems = [p for p in problems if not p.startswith("AMC_THEATRE_ID")]
+    if problems:
+        print("Cannot simulate — configuration problems:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        sys.exit(1)
+
+    fake_date = (date.today() + timedelta(days=30)).isoformat()
+    body = "[TEST — not a real drop]\n" + format_new_date_alert(
+        "The Odyssey",
+        "IMAX 70mm",
+        pretty_date(fake_date),
+        3,
+        "https://www.amctheatres.com/movie-theatres/showtimes/amc-lincoln-square-13",
+    )
+    notifier = Notifier(cfg)
+    print("Sending simulated new-date alert through all configured channels …")
+    try:
+        ids = notifier.send(body, subject="🧪 Odyssey bot — simulated alert")
+    except Exception as e:
+        print(f"[error] send failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    for i in ids:
+        print(f"  ✓ {i}")
+    print("This is exactly what a real drop will look like (minus the [TEST] tag).")
+
+
 def send_test_text(cfg: Config) -> None:
     """Send a one-off hello to every configured recipient to verify Twilio works."""
     problems = cfg.validate_for_alerts()
@@ -242,8 +322,10 @@ def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:
     while True:
         try:
             n, changed = check_once(cfg, client, notifier, state)
-            if changed:
-                _save_state(cfg.state_path, state)
+            state["polls_since_heartbeat"] += 1
+            _maybe_heartbeat(cfg, notifier, state)
+            # The poll counter ticks every loop, so state always needs saving.
+            _save_state(cfg.state_path, state)
         except AntiBotChallenge as e:
             # We hit the wall on purpose-respecting terms. Stop hammering.
             print(f"[stop] {e}", file=sys.stderr)
@@ -270,11 +352,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--test-text", action="store_true", help="Send a one-off test text to ALERT_NUMBERS and exit."
     )
+    parser.add_argument(
+        "--simulate-drop",
+        action="store_true",
+        help="Send a realistic fake 'new date' alert through the real channels and exit.",
+    )
     args = parser.parse_args(argv)
 
     cfg = Config()
     if args.test_text:
         send_test_text(cfg)
+        return
+    if args.simulate_drop:
+        simulate_drop(cfg)
         return
     run(cfg, once=args.once, dry_run=args.dry_run)
 

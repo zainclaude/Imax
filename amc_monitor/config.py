@@ -26,6 +26,20 @@ def _numbers(raw: str | None) -> list[str]:
     return [n.strip() for n in raw.split(",") if n.strip()]
 
 
+def _optional_hour(name: str, default: int) -> int | None:
+    """Unset -> default; empty string -> disabled (None); else int, clamped 0-23."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return max(0, min(23, int(raw)))
+    except ValueError:
+        return default
+
+
 # Alert modes (choose one or more, comma-separated in ALERT_MODE):
 #   new_date       -> text when a brand-new bookable calendar date appears
 #                     (the booking horizon extends, e.g. Aug 16 was the max, now
@@ -98,6 +112,10 @@ class Config:
     # topic. Topic names are effectively passwords — use a long random one.
     ntfy_topic: str | None = field(default_factory=lambda: os.getenv("NTFY_TOPIC") or None)
     ntfy_server: str = field(default_factory=lambda: os.getenv("NTFY_SERVER", "https://ntfy.sh"))
+
+    # Daily proof-of-life: send a status push at this local hour (0-23, ET).
+    # Default 9 (9am). Set HEARTBEAT_HOUR= (empty) to disable.
+    heartbeat_hour: int | None = field(default_factory=lambda: _optional_hour("HEARTBEAT_HOUR", 9))
 
     # State
     state_path: str = field(default_factory=lambda: os.getenv("STATE_PATH", ".amc_monitor_state.json"))
