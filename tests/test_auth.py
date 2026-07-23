@@ -59,7 +59,7 @@ def test_api_key_without_account_sid_is_incomplete():
         assert cfg.has_api_key_auth() is False
 
 
-def test_validate_flags_missing_auth_and_sender():
+def test_validate_flags_no_channel_at_all():
     with env(
         AMC_THEATRE_ID="362",
         ALERT_NUMBERS="+15138862571,+16155870370",
@@ -69,11 +69,13 @@ def test_validate_flags_missing_auth_and_sender():
         TWILIO_API_KEY_SECRET=None,
         TWILIO_FROM=None,
         TWILIO_MESSAGING_SERVICE_SID=None,
+        SMTP_USER=None,
+        SMTP_PASS=None,
+        ALERT_EMAILS=None,
     ):
         cfg = Config()
         problems = cfg.validate_for_alerts()
-        assert any("auth incomplete" in p for p in problems)
-        assert any("TWILIO_FROM" in p for p in problems)
+        assert any("No alert channel configured" in p for p in problems)
 
 
 def test_validate_passes_with_api_key_and_sender():

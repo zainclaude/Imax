@@ -97,6 +97,28 @@ class _OAuthSession:
         return resp.json().get("sid", "")
 
 
+def _send_email(cfg: Config, subject: str, body: str) -> list[str]:
+    """Send `body` to every ALERT_EMAILS recipient over SMTP (STARTTLS).
+
+    Recipients may be normal inboxes or carrier email-to-SMS gateway addresses.
+    Returns the list of recipients accepted by the server.
+    """
+    import smtplib
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["From"] = cfg.smtp_user
+    msg["To"] = ", ".join(cfg.alert_emails)
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=30) as server:
+        server.starttls()
+        server.login(cfg.smtp_user, cfg.smtp_pass)
+        refused = server.send_message(msg)
+    return [addr for addr in cfg.alert_emails if addr not in refused]
+
+
 class Notifier:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -127,8 +149,7 @@ class Notifier:
                 self._client = Client(self.cfg.twilio_sid, self.cfg.twilio_token)
         return self._client
 
-    def send(self, body: str) -> list[str]:
-        """Send `body` to everyone in ALERT_NUMBERS. Returns message SIDs."""
+    def _send_sms(self, body: str) -> list[str]:
         if self.cfg.has_oauth_auth():
             session = self._oauth_session()
             return [
@@ -149,6 +170,34 @@ class Notifier:
             msg = client.messages.create(**kwargs)
             sids.append(msg.sid)
         return sids
+
+    def send(self, body: str, subject: str = "🎬 Odyssey 70mm alert") -> list[str]:
+        """Send `body` over every configured channel (SMS and/or email).
+
+        Returns delivery ids (message SIDs / accepted email addresses). Raises
+        only if every configured channel fails, so one broken channel can't
+        silence the other.
+        """
+        ids: list[str] = []
+        errors: list[str] = []
+
+        if self.cfg.has_twilio_channel():
+            try:
+                ids.extend(self._send_sms(body))
+            except Exception as e:
+                errors.append(f"sms: {e}")
+
+        if self.cfg.has_email_channel():
+            try:
+                ids.extend(_send_email(self.cfg, subject, body))
+            except Exception as e:
+                errors.append(f"email: {e}")
+
+        if errors and not ids:
+            raise RuntimeError("all alert channels failed — " + "; ".join(errors))
+        for err in errors:
+            print(f"[warn] alert channel failed ({err}) but another succeeded")
+        return ids
 
 
 def format_new_date_alert(movie: str, fmt: str, pretty_date: str, count: int, link: str | None) -> str:

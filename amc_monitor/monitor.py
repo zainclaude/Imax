@@ -209,15 +209,16 @@ def send_test_text(cfg: Config) -> None:
         "dates or seats open up. You're all set."
     )
     notifier = Notifier(cfg)
-    print(f"Sending test text to: {', '.join(cfg.alert_numbers)} …")
+    recipients = cfg.alert_numbers * cfg.has_twilio_channel() + cfg.alert_emails * cfg.has_email_channel()
+    print(f"Sending test alert to: {', '.join(recipients)} …")
     try:
-        sids = notifier.send(body)
+        ids = notifier.send(body, subject="🎬 Odyssey 70mm bot — test alert")
     except Exception as e:
-        print(f"[error] Twilio send failed: {e}", file=sys.stderr)
+        print(f"[error] send failed: {e}", file=sys.stderr)
         sys.exit(1)
-    for number, sid in zip(cfg.alert_numbers, sids):
-        print(f"  ✓ queued to {number} (sid {sid})")
-    print("Done — texts should arrive within a few seconds.")
+    for i in ids:
+        print(f"  ✓ {i}")
+    print("Done — alerts should arrive within a few seconds.")
 
 
 def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:

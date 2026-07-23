@@ -85,6 +85,15 @@ class Config:
     )
     alert_numbers: list[str] = field(default_factory=lambda: _numbers(os.getenv("ALERT_NUMBERS")))
 
+    # Email channel (works today while SMS awaits toll-free verification).
+    # Recipients can be regular addresses AND/OR carrier email-to-SMS gateways
+    # (e.g. 15551234567@vtext.com for Verizon, @tmomail.net for T-Mobile).
+    smtp_host: str = field(default_factory=lambda: os.getenv("SMTP_HOST", "smtp.gmail.com"))
+    smtp_port: int = field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))
+    smtp_user: str | None = field(default_factory=lambda: os.getenv("SMTP_USER") or None)
+    smtp_pass: str | None = field(default_factory=lambda: os.getenv("SMTP_PASS") or None)
+    alert_emails: list[str] = field(default_factory=lambda: _numbers(os.getenv("ALERT_EMAILS")))
+
     # State
     state_path: str = field(default_factory=lambda: os.getenv("STATE_PATH", ".amc_monitor_state.json"))
     # Append-only log of when each showtime slot was first seen (for cadence learning).
@@ -108,26 +117,43 @@ class Config:
     def has_oauth_auth(self) -> bool:
         return bool(self.twilio_client_id and self.twilio_client_secret and self.twilio_sid)
 
+    def has_twilio_channel(self) -> bool:
+        has_auth = self.has_api_key_auth() or self.has_auth_token_auth() or self.has_oauth_auth()
+        has_sender = bool(self.twilio_from or self.messaging_service_sid)
+        return has_auth and has_sender and bool(self.alert_numbers)
+
+    def has_email_channel(self) -> bool:
+        return bool(self.smtp_user and self.smtp_pass and self.alert_emails)
+
     def validate_for_alerts(self) -> list[str]:
         problems = []
         if not self.theatre_id:
             problems.append("AMC_THEATRE_ID is not set.")
-        if not self.alert_numbers:
-            problems.append("ALERT_NUMBERS is empty (need you + your wife).")
-        using_service = bool(self.messaging_service_sid)
-        if not (self.has_api_key_auth() or self.has_auth_token_auth() or self.has_oauth_auth()):
-            if self.twilio_client_id and self.twilio_client_secret and not self.twilio_sid:
-                problems.append(
-                    "TWILIO_CLIENT_ID/SECRET found but TWILIO_ACCOUNT_SID is missing — OAuth "
-                    "replaces the auth token, but the Account SID (AC…) is still required "
-                    "for the Messages API URL. It's on your Twilio console dashboard."
-                )
-            else:
-                problems.append(
-                    "Twilio auth incomplete. Provide one of: TWILIO_CLIENT_ID + TWILIO_CLIENT_SECRET "
-                    "+ TWILIO_ACCOUNT_SID (OAuth), TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET + "
-                    "TWILIO_ACCOUNT_SID, or TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN."
-                )
-        if not using_service and not self.twilio_from:
-            problems.append("TWILIO_FROM missing (or set TWILIO_MESSAGING_SERVICE_SID).")
+
+        # At least one working alert channel is required; both is fine.
+        if self.has_twilio_channel() or self.has_email_channel():
+            return problems
+
+        if self.twilio_client_id and self.twilio_client_secret and not self.twilio_sid:
+            problems.append(
+                "TWILIO_CLIENT_ID/SECRET found but TWILIO_ACCOUNT_SID is missing — OAuth "
+                "replaces the auth token, but the Account SID (AC…) is still required "
+                "for the Messages API URL. It's on your Twilio console dashboard."
+            )
+        elif self.smtp_user or self.smtp_pass or self.alert_emails:
+            missing = [
+                name
+                for name, val in [
+                    ("SMTP_USER", self.smtp_user),
+                    ("SMTP_PASS", self.smtp_pass),
+                    ("ALERT_EMAILS", self.alert_emails),
+                ]
+                if not val
+            ]
+            problems.append(f"Email channel incomplete — missing: {', '.join(missing)}.")
+        else:
+            problems.append(
+                "No alert channel configured. Set up email (SMTP_USER + SMTP_PASS + ALERT_EMAILS) "
+                "and/or Twilio SMS (auth + TWILIO_FROM + ALERT_NUMBERS)."
+            )
         return problems
