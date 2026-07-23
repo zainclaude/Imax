@@ -1,8 +1,8 @@
-"""Tests for the daily heartbeat and heartbeat-hour config parsing."""
+"""Tests for the hourly horizon check-in and interval config parsing."""
 
-from unittest import mock
+import time
 
-from amc_monitor.config import Config, _optional_hour
+from amc_monitor.config import Config, _optional_hours
 from amc_monitor.monitor import _fresh_state, _maybe_heartbeat
 from tests.test_auth import env
 
@@ -16,32 +16,21 @@ class FakeNotifier:
         return ["ok"]
 
 
-def _cfg(hour):
+def _cfg(hours):
     cfg = Config()
-    cfg.heartbeat_hour = hour
+    cfg.heartbeat_hours = hours
     return cfg
 
 
-def _at_hour(hour):
-    """Patch 'now' inside _maybe_heartbeat to a fixed ET datetime."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    fixed = datetime(2026, 7, 23, hour, 30, tzinfo=ZoneInfo("America/New_York"))
-    dt_mock = mock.Mock()
-    dt_mock.now.return_value = fixed
-    return mock.patch("datetime.datetime", dt_mock)
-
-
-def test_optional_hour_parsing():
-    with env(HEARTBEAT_HOUR=None):
-        assert _optional_hour("HEARTBEAT_HOUR", 9) == 9  # unset -> default
-    with env(HEARTBEAT_HOUR=""):
-        assert _optional_hour("HEARTBEAT_HOUR", 9) is None  # empty -> disabled
-    with env(HEARTBEAT_HOUR="14"):
-        assert _optional_hour("HEARTBEAT_HOUR", 9) == 14
-    with env(HEARTBEAT_HOUR="99"):
-        assert _optional_hour("HEARTBEAT_HOUR", 9) == 23  # clamped
+def test_optional_hours_parsing():
+    with env(HEARTBEAT_HOURS=None):
+        assert _optional_hours("HEARTBEAT_HOURS", 1.0) == 1.0  # unset -> default
+    with env(HEARTBEAT_HOURS=""):
+        assert _optional_hours("HEARTBEAT_HOURS", 1.0) is None  # empty -> disabled
+    with env(HEARTBEAT_HOURS="2"):
+        assert _optional_hours("HEARTBEAT_HOURS", 1.0) == 2.0
+    with env(HEARTBEAT_HOURS="0.01"):
+        assert _optional_hours("HEARTBEAT_HOURS", 1.0) == 0.25  # floor
 
 
 def test_heartbeat_disabled():
@@ -51,26 +40,49 @@ def test_heartbeat_disabled():
     assert notifier.bodies == []
 
 
-def test_heartbeat_fires_after_hour_once_per_day():
+def test_first_heartbeat_fires_immediately():
     state = _fresh_state()
-    state["seen_dates"] = ["2026-08-15", "2026-08-16"]
-    state["polls_since_heartbeat"] = 42
+    state["seen_dates"] = ["2026-08-16", "2026-08-17"]
     notifier = FakeNotifier()
-
-    with _at_hour(10):  # past 9am ET
-        assert _maybe_heartbeat(_cfg(9), notifier, state) is True
-        assert _maybe_heartbeat(_cfg(9), notifier, state) is False  # same day: no repeat
-
-    assert len(notifier.bodies) == 1
-    body = notifier.bodies[0]
-    assert "2026-08-16" in body  # reports the horizon
-    assert "42" in body  # reports poll count
-    assert state["polls_since_heartbeat"] == 0  # counter reset
+    assert _maybe_heartbeat(_cfg(1.0), notifier, state) is True
+    assert "furthest bookable date is Mon Aug 17" in notifier.bodies[0]
 
 
-def test_heartbeat_waits_for_hour():
+def test_heartbeat_suppressed_within_interval_then_fires():
+    state = _fresh_state()
+    state["seen_dates"] = ["2026-08-17"]
+    notifier = FakeNotifier()
+    cfg = _cfg(1.0)
+
+    assert _maybe_heartbeat(cfg, notifier, state) is True
+    assert _maybe_heartbeat(cfg, notifier, state) is False  # too soon
+
+    state["last_heartbeat_epoch"] = time.time() - 3700  # >1h ago
+    state["polls_since_heartbeat"] = 20
+    assert _maybe_heartbeat(cfg, notifier, state) is True
+
+    assert len(notifier.bodies) == 2
+    assert "still Mon Aug 17" in notifier.bodies[1]  # unchanged horizon says "still"
+    assert "20 polls" in notifier.bodies[1]
+    assert state["polls_since_heartbeat"] == 0
+
+
+def test_heartbeat_reports_horizon_change():
+    state = _fresh_state()
+    state["seen_dates"] = ["2026-08-16"]
+    notifier = FakeNotifier()
+    cfg = _cfg(1.0)
+    _maybe_heartbeat(cfg, notifier, state)
+
+    state["seen_dates"].append("2026-08-17")
+    state["last_heartbeat_epoch"] = time.time() - 3700
+    _maybe_heartbeat(cfg, notifier, state)
+
+    assert "now Mon Aug 17 (was Sun Aug 16)" in notifier.bodies[1]
+
+
+def test_heartbeat_before_any_showtimes():
     state = _fresh_state()
     notifier = FakeNotifier()
-    with _at_hour(7):  # before 9am ET
-        assert _maybe_heartbeat(_cfg(9), notifier, state) is False
-    assert notifier.bodies == []
+    assert _maybe_heartbeat(_cfg(1.0), notifier, state) is True
+    assert "no booking horizon" in notifier.bodies[0]

@@ -26,8 +26,8 @@ def _numbers(raw: str | None) -> list[str]:
     return [n.strip() for n in raw.split(",") if n.strip()]
 
 
-def _optional_hour(name: str, default: int) -> int | None:
-    """Unset -> default; empty string -> disabled (None); else int, clamped 0-23."""
+def _optional_hours(name: str, default: float) -> float | None:
+    """Unset -> default; empty string -> disabled (None); else hours, min 0.25."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -35,7 +35,7 @@ def _optional_hour(name: str, default: int) -> int | None:
     if not raw:
         return None
     try:
-        return max(0, min(23, int(raw)))
+        return max(0.25, float(raw))
     except ValueError:
         return default
 
@@ -113,9 +113,10 @@ class Config:
     ntfy_topic: str | None = field(default_factory=lambda: os.getenv("NTFY_TOPIC") or None)
     ntfy_server: str = field(default_factory=lambda: os.getenv("NTFY_SERVER", "https://ntfy.sh"))
 
-    # Daily proof-of-life: send a status push at this local hour (0-23, ET).
-    # Default 9 (9am). Set HEARTBEAT_HOUR= (empty) to disable.
-    heartbeat_hour: int | None = field(default_factory=lambda: _optional_hour("HEARTBEAT_HOUR", 9))
+    # Proof-of-life: push a status message every N hours reporting the furthest
+    # bookable date ("still Aug 17"). If these stop arriving, the monitor is
+    # down. Default 1 (hourly). Set HEARTBEAT_HOURS= (empty) to disable.
+    heartbeat_hours: float | None = field(default_factory=lambda: _optional_hours("HEARTBEAT_HOURS", 1.0))
 
     # State
     state_path: str = field(default_factory=lambda: os.getenv("STATE_PATH", ".amc_monitor_state.json"))

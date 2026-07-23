@@ -30,7 +30,8 @@ def _fresh_state() -> dict:
         "seen_dates": [],
         "dates_seeded": False,
         "polls_since_heartbeat": 0,
-        "last_heartbeat_date": None,
+        "last_heartbeat_epoch": None,
+        "last_reported_horizon": None,
     }
 
 
@@ -47,7 +48,8 @@ def _load_state(path: str) -> dict:
     state.setdefault("seen_dates", [])  # list of 'YYYY-MM-DD' bookable dates we've observed
     state.setdefault("dates_seeded", False)  # have we captured the initial horizon yet?
     state.setdefault("polls_since_heartbeat", 0)
-    state.setdefault("last_heartbeat_date", None)
+    state.setdefault("last_heartbeat_epoch", None)
+    state.setdefault("last_reported_horizon", None)
     return state
 
 
@@ -202,36 +204,49 @@ def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state:
 
 
 def _maybe_heartbeat(cfg: Config, notifier: Notifier | None, state: dict) -> bool:
-    """Once a day at HEARTBEAT_HOUR (ET), push a proof-of-life status.
+    """Every HEARTBEAT_HOURS, push the furthest bookable date ("still Aug 17").
 
-    If this stops arriving, you know the monitor is down — the silence is the
-    signal. Returns True if state changed.
+    Hearing "still the same date" every hour confirms the monitor is alive AND
+    hasn't missed a drop; if the messages stop, the monitor is down. The first
+    poll after startup sends one immediately so you get instant confirmation.
+    Returns True if a heartbeat was sent.
     """
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    if cfg.heartbeat_hour is None:
+    if cfg.heartbeat_hours is None:
         return False
-    now = datetime.now(ZoneInfo("America/New_York"))
-    today = now.date().isoformat()
-    if now.hour < cfg.heartbeat_hour or state["last_heartbeat_date"] == today:
+    now = time.time()
+    last = state.get("last_heartbeat_epoch")
+    if last is not None and now - last < cfg.heartbeat_hours * 3600:
         return False
 
-    horizon = max(state["seen_dates"]) if state["seen_dates"] else "none seen yet"
-    body = (
-        f"✅ Odyssey bot alive — watching AMC Lincoln Square.\n"
-        f"Booking horizon: {horizon}. "
-        f"Polls since last heartbeat: {state['polls_since_heartbeat']}.\n"
-        f"No news is no new dates — you'll hear immediately when one drops."
-    )
+    if state["seen_dates"]:
+        horizon = max(state["seen_dates"])
+        previous = state.get("last_reported_horizon")
+        if previous == horizon:
+            headline = f"furthest bookable date is still {pretty_date(horizon)}"
+        elif previous is not None:
+            headline = f"furthest bookable date is now {pretty_date(horizon)} (was {pretty_date(previous)})"
+        else:
+            headline = f"furthest bookable date is {pretty_date(horizon)}"
+        body = (
+            f"📡 Odyssey bot: {headline}.\n"
+            f"Watching AMC Lincoln Square · {state['polls_since_heartbeat']} polls since last check-in."
+        )
+    else:
+        horizon = None
+        body = (
+            "📡 Odyssey bot: alive and polling, but no 70mm Odyssey showtimes "
+            "visible yet — no booking horizon to report."
+        )
+
     print(f"[heartbeat] {body!r}")
     if notifier:
         try:
-            notifier.send(body, subject="✅ Odyssey bot daily check-in")
+            notifier.send(body, subject="📡 Odyssey bot check-in")
         except Exception as e:
             print(f"[warn] heartbeat send failed: {e}", file=sys.stderr)
             return False
-    state["last_heartbeat_date"] = today
+    state["last_heartbeat_epoch"] = now
+    state["last_reported_horizon"] = horizon
     state["polls_since_heartbeat"] = 0
     return True
 
