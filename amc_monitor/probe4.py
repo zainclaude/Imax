@@ -94,7 +94,8 @@ def main() -> None:
         print(f"   auth-ish request headers present: {interesting or 'none'}")
         if req.get("method") == "POST":
             post = (req.get("postData", {}) or {}).get("text", "")
-            print(f"   POST body sample: {re.sub(r'\\s+', ' ', post)[:400]}")
+            post_sample = re.sub(r"\s+", " ", post)[:400]
+            print(f"   POST body sample: {post_sample}")
 
         if "json" in mime or text.lstrip().startswith(("{", "[")):
             try:
