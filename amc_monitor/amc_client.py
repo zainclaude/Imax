@@ -145,7 +145,7 @@ class AmcClient:
             resp = self._get(url)
         finally:
             self.session.headers.update({"Accept": "application/json"})
-        return parse_dated_page(resp.text, self.theatre_slug)
+        return parse_dated_page(resp.text, self.theatre_slug, date_iso, url)
 
     # --- orchestration ------------------------------------------------------
 
@@ -194,12 +194,19 @@ CLASS_RE = re.compile(r'class="([^"]*)"')
 DATETIME_RE = re.compile(r'dateTime="([^"]+)"')
 
 
-def parse_dated_page(html: str, theatre_slug: str) -> list[Showtime]:
+def parse_dated_page(
+    html: str, theatre_slug: str, date_iso: str = "", page_url: str | None = None
+) -> list[Showtime]:
     """Extract showtimes from a server-rendered dated showtimes page.
 
-    Structure (verified against the live page, 2026-07): each showtime is an
-    anchor whose class tokens encode `{movie-slug}-{theatre-slug}-{format}-{n}`,
+    Structure (verified against the live page, 2026-07): each BOOKABLE showtime
+    is an anchor whose class tokens encode `{movie-slug}-{theatre-slug}-{format}-{n}`,
     with the booking href `/showtimes/<id>` and a `<time dateTime="…Z">` inside.
+
+    SOLD-OUT showtimes render with the same tokens (section headings, ids, aria
+    labels) but WITHOUT booking anchors. A released-but-sold-out date still
+    counts for horizon purposes, so any (movie, format) token group that has no
+    anchors yields one synthetic entry dated to the page's date.
     """
     results: list[Showtime] = []
     seen: set[str] = set()
@@ -229,6 +236,23 @@ def parse_dated_page(html: str, theatre_slug: str) -> list[Showtime]:
                 when_iso=dt.group(1) if dt else "",
                 seatmap_url=None,
                 purchase_url=f"https://www.amctheatres.com/showtimes/{sid}",
+            )
+        )
+
+    # Sold-out groups: tokens present anywhere on the page (headings/ids/aria,
+    # including inside the escaped RSC stream) with no bookable anchor.
+    token_re = re.compile(r"([a-z0-9][a-z0-9\-]*?)-" + re.escape(theatre_slug) + r"-([a-z0-9]+)-\d+")
+    groups = {(m.group(1), m.group(2)) for m in token_re.finditer(html)}
+    covered = {(st.movie_title, st.format_label) for st in results}
+    for movie_slug, fmt in sorted(groups - covered):
+        results.append(
+            Showtime(
+                id=f"released:{movie_slug}:{fmt}:{date_iso or 'unknown'}",
+                movie_title=movie_slug,
+                format_label=fmt,
+                when_iso=date_iso,
+                seatmap_url=None,
+                purchase_url=page_url,
             )
         )
     return results

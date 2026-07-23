@@ -64,6 +64,39 @@ def test_parse_dedupes_and_survives_missing_class():
     assert sts[1].movie_title == ""  # classless anchor kept but unattributed
 
 
+# Sold-out sections keep their tokens (heading ids, aria, RSC stream) but no anchors.
+SOLDOUT_SECTION = (
+    '<h3 id="{movie}-{theatre}-{fmt}-0">IMAX 70MM</h3>'
+    '<div aria-labelledby="{movie}-{theatre}-{fmt}-0-attributes">All sold out</div>'
+)
+
+
+def _soldout_page(*entries):
+    body = "".join(
+        SOLDOUT_SECTION.format(movie=m, theatre=THEATRE, fmt=f) for (m, f) in entries
+    )
+    return f"<html><body>{body}</body></html>"
+
+
+def test_soldout_sections_yield_synthetic_released_showtimes():
+    html = _soldout_page((ODYSSEY, "imax70mm"), (ODYSSEY, "70mm"))
+    sts = parse_dated_page(html, THEATRE, "2026-08-05", "https://x/showtimes?date=2026-08-05")
+    assert [(s.movie_title, s.format_label) for s in sts] == [
+        (ODYSSEY, "70mm"),
+        (ODYSSEY, "imax70mm"),
+    ]
+    assert all(s.when_iso == "2026-08-05" for s in sts)
+    assert all(s.purchase_url == "https://x/showtimes?date=2026-08-05" for s in sts)
+
+
+def test_bookable_anchor_suppresses_synthetic_for_same_group():
+    html = _page((ODYSSEY, "imax70mm", "1", "2026-08-05T13:00:00.000Z")) + _soldout_page(
+        (ODYSSEY, "imax70mm")
+    )
+    sts = parse_dated_page(html, THEATRE, "2026-08-05")
+    assert len(sts) == 1  # the real anchor covers the group
+
+
 class FakeDatedClient:
     """Maps ISO date -> page HTML; counts fetches per date."""
 
@@ -74,7 +107,7 @@ class FakeDatedClient:
 
     def fetch_dated(self, date_iso):
         self.fetches.append(date_iso)
-        return parse_dated_page(self.pages.get(date_iso, "<html></html>"), THEATRE)
+        return parse_dated_page(self.pages.get(date_iso, "<html></html>"), THEATRE, date_iso)
 
 
 def _cfg():
@@ -116,6 +149,28 @@ def test_seed_scan_walks_until_horizon(_sleep, tmp_path):
     assert max(s.when_iso[:10] for s in out) == (today + timedelta(days=2)).isoformat()
     assert client.fetches[:3] == [(today + timedelta(days=5 + i)).isoformat() for i in range(3)]
     assert client.fetches[3:] == [(today + timedelta(days=4 - i)).isoformat() for i in range(3)]
+
+
+@mock.patch("time.sleep")
+def test_seed_counts_soldout_dates_toward_horizon(_sleep, tmp_path):
+    from datetime import date, timedelta
+
+    cfg = _cfg()
+    cfg.sightings_path = str(tmp_path / "s.jsonl")
+    today = date.today()
+    # All Odyssey dates are sold out (tokens, no anchors) through today+2.
+    client = FakeDatedClient(
+        {
+            (today + timedelta(days=i)).isoformat(): _soldout_page((ODYSSEY, "imax70mm"))
+            for i in range(3)
+        }
+    )
+    state = _fresh_state()
+
+    out = _scan_dated_pages(cfg, client, state)
+
+    assert out, "sold-out dates must still count as released"
+    assert max(s.when_iso for s in out) == (today + timedelta(days=2)).isoformat()
 
 
 @mock.patch("time.sleep")
