@@ -271,6 +271,14 @@ def _scan_dated_pages(cfg: Config, client: AmcClient, state: dict) -> list[Showt
     while True:
         found = day_matches(d)
         if not found:
+            if not out:  # ordinary quiet poll — leave a visible pulse in the log
+                from datetime import datetime
+
+                print(
+                    f"[{datetime.now():%H:%M:%S}] checked {d.isoformat()} — nothing new "
+                    f"(horizon still {max(state['seen_dates'])})",
+                    flush=True,
+                )
             break
         out.extend(found)  # a new date just went live; see if the next did too
         d += timedelta(days=1)
