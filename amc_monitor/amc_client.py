@@ -15,6 +15,7 @@ Design rules (read before changing):
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -46,10 +47,18 @@ class Showtime:
         return f"{self.id}"
 
 
+DEFAULT_SHOWTIMES_URL = (
+    "https://www.amctheatres.com/movie-theatres/new-york-city/amc-lincoln-square-13/showtimes"
+)
+
+
 class AmcClient:
-    def __init__(self, api_key: str | None, theatre_id: str | None):
+    def __init__(self, api_key: str | None, theatre_id: str | None, showtimes_url: str | None = None):
         self.api_key = api_key
         self.theatre_id = theatre_id
+        self.showtimes_url = (showtimes_url or DEFAULT_SHOWTIMES_URL).rstrip("/").split("?")[0]
+        # The theatre slug as it appears in showtime anchor classes.
+        self.theatre_slug = self.showtimes_url.rstrip("/").rsplit("/", 2)[-2]
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
 
@@ -105,23 +114,33 @@ class AmcClient:
             )
         return out
 
-    # --- HTML fallback (best-effort, no evasion) ----------------------------
+    # --- dated public page (no API key needed; no evasion) ------------------
 
-    def _fetch_via_html(self, movie_query: str) -> list[Showtime]:
-        # Public showtimes page. If this path starts returning challenges,
-        # that's the signal to switch to the official API — not to evade.
-        url = f"https://www.amctheatres.com/movie-theatres/showtimes/{self.theatre_id}"
+    def fetch_dated(self, date_iso: str) -> list[Showtime]:
+        """Fetch one date's showtimes from the public page.
+
+        The dated page (?date=YYYY-MM-DD) is fully server-rendered: every
+        showtime is an anchor like
+          <a class="…the-odyssey-76238-amc-lincoln-square-13-imax70mm-0…"
+             href="/showtimes/144316365"><time dateTime="2026-08-05T13:00:00.000Z">…
+        so movie, theatre, format, time, and booking link are all in plain HTML.
+        If this path starts returning challenges, the signal is to switch to the
+        official API — not to evade.
+        """
+        url = f"{self.showtimes_url}?date={date_iso}"
         self.session.headers.update({"Accept": "text/html"})
-        resp = self._get(url)
-        self.session.headers.update({"Accept": "application/json"})
-        return _parse_showtimes_html(resp.text, movie_query, self.theatre_id)
+        try:
+            resp = self._get(url)
+        finally:
+            self.session.headers.update({"Accept": "application/json"})
+        return parse_dated_page(resp.text, self.theatre_slug)
 
     # --- orchestration ------------------------------------------------------
 
     def fetch_showtimes(self, movie_query: str) -> list[Showtime]:
-        if self.api_key:
-            return self._fetch_via_api(movie_query)
-        return self._fetch_via_html(movie_query)
+        if not self.api_key:
+            raise RuntimeError("fetch_showtimes requires AMC_API_KEY; use fetch_dated for the page path")
+        return self._fetch_via_api(movie_query)
 
 
 class _Backoff(RuntimeError):
@@ -158,39 +177,46 @@ def _href(link) -> str | None:
     return None
 
 
-def _parse_showtimes_html(html: str, movie_query: str, theatre_id: str | None) -> list[Showtime]:
-    """
-    Minimal, dependency-light extraction. AMC embeds showtime JSON in the page;
-    this pulls the obvious title matches. Kept intentionally conservative — if the
-    markup shifts, prefer wiring up AMC_API_KEY over fragile scraping heuristics.
-    """
-    import json
-    import re
+ANCHOR_RE = re.compile(r'<a\b[^>]*href="/showtimes/(\d+)"[^>]*>.*?</a>', re.DOTALL)
+CLASS_RE = re.compile(r'class="([^"]*)"')
+DATETIME_RE = re.compile(r'dateTime="([^"]+)"')
 
+
+def parse_dated_page(html: str, theatre_slug: str) -> list[Showtime]:
+    """Extract showtimes from a server-rendered dated showtimes page.
+
+    Structure (verified against the live page, 2026-07): each showtime is an
+    anchor whose class tokens encode `{movie-slug}-{theatre-slug}-{format}-{n}`,
+    with the booking href `/showtimes/<id>` and a `<time dateTime="…Z">` inside.
+    """
     results: list[Showtime] = []
     seen: set[str] = set()
 
-    # AMC ships a __NEXT_DATA__ / embedded JSON blob; try to find showtime-ish objects.
-    for match in re.finditer(r'\{"[^{}]*"showtimeId"[^{}]*\}', html):
-        try:
-            obj = json.loads(match.group(0))
-        except json.JSONDecodeError:
+    movie_fmt_re = re.compile(
+        r"(?:^|\s)([a-z0-9][a-z0-9\-]*?)-" + re.escape(theatre_slug) + r"-([a-z0-9]+)-\d+(?:\s|$|-)"
+    )
+
+    for m in ANCHOR_RE.finditer(html):
+        sid = m.group(1)
+        if sid in seen:
             continue
-        title = str(obj.get("movieName") or obj.get("title") or "")
-        if movie_query.lower() not in title.lower():
-            continue
-        sid = str(obj.get("showtimeId") or obj.get("id") or "")
-        if not sid or sid in seen:
-            continue
+        tag = m.group(0)
+        cls = CLASS_RE.search(tag)
+        dt = DATETIME_RE.search(tag)
+        movie_slug, fmt = "", ""
+        if cls:
+            mf = movie_fmt_re.search(cls.group(1))
+            if mf:
+                movie_slug, fmt = mf.group(1), mf.group(2)
         seen.add(sid)
         results.append(
             Showtime(
                 id=sid,
-                movie_title=title,
-                format_label=str(obj.get("premiumFormat") or obj.get("format") or ""),
-                when_iso=str(obj.get("showDateTimeUtc") or obj.get("showtime") or ""),
-                seatmap_url=obj.get("seatmapUrl"),
-                purchase_url=obj.get("purchaseUrl"),
+                movie_title=movie_slug,  # slug form, e.g. "the-odyssey-76238"
+                format_label=fmt,  # e.g. "imax70mm"
+                when_iso=dt.group(1) if dt else "",
+                seatmap_url=None,
+                purchase_url=f"https://www.amctheatres.com/showtimes/{sid}",
             )
         )
     return results

@@ -92,6 +92,23 @@ def _record_sightings(cfg: Config, state: dict, candidates: list[Showtime]) -> t
     return newly_seen, changed
 
 
+def _pretty_movie(title: str) -> str:
+    """'the-odyssey-76238' -> 'The Odyssey'; real titles pass through."""
+    if "-" not in title:
+        return title
+    words = [w for w in title.split("-") if not w.isdigit()]
+    return " ".join(w.capitalize() for w in words)
+
+
+def _pretty_format(fmt: str) -> str:
+    """'imax70mm' -> 'IMAX 70MM'; other tokens/labels get an uppercase touch-up."""
+    if not fmt:
+        return "70mm"
+    if fmt.lower().replace(" ", "") == "imax70mm":
+        return "IMAX 70MM"
+    return fmt if " " in fmt else fmt.upper()
+
+
 def _alert_new_dates(cfg: Config, notifier, state: dict, candidates: list[Showtime]) -> tuple[int, bool]:
     """Text once per brand-new bookable calendar date (the horizon extending)."""
     by_date: dict[str, list[Showtime]] = {}
@@ -118,8 +135,13 @@ def _alert_new_dates(cfg: Config, notifier, state: dict, candidates: list[Showti
             continue
         shows = by_date[d]
         link = next((s.purchase_url or s.seatmap_url for s in shows), None)
-        fmt = shows[0].format_label or "70mm"
-        body = format_new_date_alert(shows[0].movie_title, fmt, pretty_date(d), len(shows), link)
+        body = format_new_date_alert(
+            _pretty_movie(shows[0].movie_title),
+            _pretty_format(shows[0].format_label),
+            pretty_date(d),
+            len(shows),
+            link,
+        )
         if _emit(notifier, body):
             state["seen_dates"] = sorted(set(state["seen_dates"]) | {d})
             seen_dates.add(d)
@@ -179,10 +201,68 @@ def _alert_any_showtime(cfg: Config, notifier, state: dict, candidates: list[Sho
     return sent, changed
 
 
+def _matches_movie(st: Showtime, query: str) -> bool:
+    # API mode gives real titles ("The Odyssey"); page mode gives slugs
+    # ("the-odyssey-76238"). Normalize both sides to compare.
+    return query.lower().replace(" ", "-") in (st.movie_title or "").lower().replace(" ", "-")
+
+
+def _scan_dated_pages(cfg: Config, client: AmcClient, state: dict) -> list[Showtime]:
+    """Gather matching showtimes from the public dated pages.
+
+    First run: walk forward day by day from today to find every currently
+    bookable date (the seed scan — a few dozen small requests, once ever).
+    After that: ONE request per poll, for the day after the current horizon —
+    the only place a new date can appear.
+    """
+    from datetime import date, timedelta
+
+    def day_matches(d: date) -> list[Showtime]:
+        showtimes = client.fetch_dated(d.isoformat())
+        return [
+            st
+            for st in showtimes
+            if _matches_movie(st, cfg.movie_query) and _matches_format(st, cfg.format_match)
+        ]
+
+    out: list[Showtime] = []
+    if not state["dates_seeded"]:
+        d = date.today()
+        empty_streak = 0
+        scanned = 0
+        while scanned < cfg.horizon_scan_days and empty_streak < 3:
+            found = day_matches(d)
+            if found:
+                out.extend(found)
+                empty_streak = 0
+            else:
+                empty_streak += 1
+            d += timedelta(days=1)
+            scanned += 1
+            time.sleep(2)  # gentle pacing within the one-time seed scan
+        print(f"[seed-scan] walked {scanned} days, found {len(out)} matching showtimes")
+        return out
+
+    if not state["seen_dates"]:
+        return out
+    d = date.fromisoformat(max(state["seen_dates"])) + timedelta(days=1)
+    while True:
+        found = day_matches(d)
+        if not found:
+            break
+        out.extend(found)  # a new date just went live; see if the next did too
+        d += timedelta(days=1)
+        time.sleep(2)
+    return out
+
+
 def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state: dict) -> tuple[int, bool]:
     """One poll. Returns (alerts_sent, state_changed)."""
-    showtimes = polite_fetch(client, cfg.movie_query)
-    candidates = [st for st in showtimes if _matches_format(st, cfg.format_match)]
+    if cfg.amc_api_key:
+        showtimes = polite_fetch(client, cfg.movie_query)
+        candidates = [st for st in showtimes if _matches_format(st, cfg.format_match)]
+    else:
+        candidates = _scan_dated_pages(cfg, client, state)
 
     newly_seen, changed = _record_sightings(cfg, state, candidates)
     sent = 0
@@ -326,11 +406,11 @@ def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:
             print(f"  - {p}", file=sys.stderr)
         sys.exit(1)
 
-    client = AmcClient(cfg.amc_api_key, cfg.theatre_id)
+    client = AmcClient(cfg.amc_api_key, cfg.theatre_id, cfg.showtimes_url)
     notifier = None if dry_run else Notifier(cfg)
     state = _load_state(cfg.state_path)
 
-    source = "official API" if cfg.amc_api_key else "public page (best-effort)"
+    source = "official API" if cfg.amc_api_key else f"dated public pages ({client.showtimes_url})"
     print(f"Watching '{cfg.movie_query}' [{cfg.format_match}] at theatre {cfg.theatre_id} via {source}.")
     print(f"Poll every ~{cfg.humane_poll_seconds()}s. Alert modes: {', '.join(cfg.alert_modes)}.")
 

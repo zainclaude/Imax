@@ -68,6 +68,10 @@ class Config:
     # AMC data source
     amc_api_key: str | None = field(default_factory=lambda: os.getenv("AMC_API_KEY") or None)
     theatre_id: str | None = field(default_factory=lambda: os.getenv("AMC_THEATRE_ID") or None)
+    # Public dated-page source (used when no API key): the theatre's showtimes URL.
+    showtimes_url: str | None = field(default_factory=lambda: os.getenv("AMC_SHOWTIMES_URL") or None)
+    # How many days forward the one-time seed scan walks to find the horizon.
+    horizon_scan_days: int = field(default_factory=lambda: int(os.getenv("HORIZON_SCAN_DAYS", "45")))
 
     # What to watch
     movie_query: str = field(default_factory=lambda: os.getenv("MOVIE_QUERY", "Odyssey"))
@@ -154,8 +158,10 @@ class Config:
 
     def validate_for_alerts(self) -> list[str]:
         problems = []
-        if not self.theatre_id:
-            problems.append("AMC_THEATRE_ID is not set.")
+        # The API path needs a numeric theatre id; the dated-page path has a
+        # built-in default URL for Lincoln Square.
+        if self.amc_api_key and not self.theatre_id:
+            problems.append("AMC_THEATRE_ID is not set (required with AMC_API_KEY).")
 
         # At least one working alert channel is required; several is fine.
         if self.has_twilio_channel() or self.has_email_channel() or self.has_ntfy_channel():
