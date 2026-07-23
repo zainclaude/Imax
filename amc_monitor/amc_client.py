@@ -34,6 +34,10 @@ class AntiBotChallenge(RuntimeError):
     """
 
 
+class ApiKeyUnauthorized(RuntimeError):
+    """The AMC vendor key was rejected (e.g. issued but not yet activated)."""
+
+
 @dataclass
 class Showtime:
     id: str
@@ -72,6 +76,14 @@ class AmcClient:
             retry_after = resp.headers.get("Retry-After")
             wait = int(retry_after) if (retry_after and retry_after.isdigit()) else 60
             raise _Backoff(wait)
+
+        # A rejected vendor key is an API-level refusal, not a bot challenge —
+        # distinguish it so the caller can fall back to the public-page path.
+        if resp.status_code in (401, 403) and "vendorkey" in resp.text[:2000].lower().replace(" ", ""):
+            raise ApiKeyUnauthorized(
+                "AMC rejected the vendor key (not activated yet?). "
+                "Falling back is safe; retry the API once AMC approves the key."
+            )
 
         # Detect (but do NOT attempt to defeat) an anti-bot interstitial.
         server = resp.headers.get("Server", "").lower()

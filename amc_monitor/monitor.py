@@ -15,7 +15,7 @@ import random
 import sys
 import time
 
-from .amc_client import AmcClient, AntiBotChallenge, Showtime, polite_fetch
+from .amc_client import AmcClient, AntiBotChallenge, ApiKeyUnauthorized, Showtime, polite_fetch
 from .config import Config
 from .dates import local_date_of, pretty_date
 from .notifier import Notifier, format_alert, format_new_date_alert
@@ -259,8 +259,19 @@ def _scan_dated_pages(cfg: Config, client: AmcClient, state: dict) -> list[Showt
 def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state: dict) -> tuple[int, bool]:
     """One poll. Returns (alerts_sent, state_changed)."""
     if cfg.amc_api_key:
-        showtimes = polite_fetch(client, cfg.movie_query)
-        candidates = [st for st in showtimes if _matches_format(st, cfg.format_match)]
+        try:
+            showtimes = polite_fetch(client, cfg.movie_query)
+            candidates = [st for st in showtimes if _matches_format(st, cfg.format_match)]
+        except ApiKeyUnauthorized as e:
+            print(f"[warn] {e}", file=sys.stderr)
+            print(
+                "[warn] switching to the public dated-page source for this run; "
+                "restart once AMC activates the key to use the API.",
+                file=sys.stderr,
+            )
+            cfg.amc_api_key = None
+            client.api_key = None
+            candidates = _scan_dated_pages(cfg, client, state)
     else:
         candidates = _scan_dated_pages(cfg, client, state)
 
