@@ -31,7 +31,14 @@ def main() -> None:
 
     cfg = Config()
     title = cfg.movie_query
-    url = "https://www.amctheatres.com/movie-theatres/new-york-city/amc-lincoln-square-13/showtimes"
+    # Late at night "today" has zero remaining showtimes and renders only
+    # "Try Tomorrow" panels — so probe a date that actually has listings.
+    # Optionally pass a date: python3 -m amc_monitor.probe5 2026-08-05
+    date = sys.argv[1] if len(sys.argv) > 1 else "tomorrow"
+    url = (
+        "https://www.amctheatres.com/movie-theatres/new-york-city/"
+        f"amc-lincoln-square-13/showtimes?date={date}"
+    )
 
     captured = []  # (method, url, mime, body)
 
