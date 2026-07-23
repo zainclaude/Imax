@@ -1,15 +1,12 @@
 """
-Diagnostic stage 5: load the showtimes page in a local real browser (Playwright)
-and record which network responses actually carry the showtime data.
+Diagnostic stage 5 (v2): load the showtimes page in a local Playwright browser,
+record all traffic, and hunt for showtime data by MANY signals — title, movie
+id, showtime-shaped keys, booking links, 2026 timestamps — plus read the
+rendered DOM itself for showtime buttons.
 
-    pip3 install playwright
-    python3 -m playwright install chromium
     python3 -m amc_monitor.probe5
 
-One page load, from your own machine, watching the page's own traffic — the
-automated equivalent of reading the DevTools Network tab. Prints the same
-report style as probe4: URLs, methods, JSON field names, showtime-shaped
-samples. No cookies or header values are printed.
+Prints no cookies or header values. Safe to paste.
 """
 
 from __future__ import annotations
@@ -17,11 +14,12 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import Counter
 
 from .config import Config
-from .probe4 import _find_showtime_samples, _json_keys
 
 ASSET_RE = re.compile(r"\.(js|css|woff2?|png|jpe?g|svg|ico|webp)(\?|$)")
+URL_TRIM = 150
 
 
 def main() -> None:
@@ -32,12 +30,12 @@ def main() -> None:
         sys.exit(1)
 
     cfg = Config()
-    needle = cfg.movie_query.lower()
+    title = cfg.movie_query
     url = "https://www.amctheatres.com/movie-theatres/new-york-city/amc-lincoln-square-13/showtimes"
 
     captured = []  # (method, url, mime, body)
 
-    print(f"Loading {url} in a local Chromium and recording responses…")
+    print(f"Loading {url} …")
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
@@ -45,66 +43,105 @@ def main() -> None:
         def on_response(resp):
             try:
                 ctype = resp.headers.get("content-type", "")
-                if ASSET_RE.search(resp.url) or any(
-                    t in ctype for t in ("image/", "font/", "css")
-                ):
+                if ASSET_RE.search(resp.url) or any(t in ctype for t in ("image/", "font/", "css")):
                     return
-                body = resp.text()
-                captured.append((resp.request.method, resp.url, ctype, body))
+                captured.append((resp.request.method, resp.url, ctype, resp.text()))
             except Exception:
-                pass  # bodies of redirects/aborted requests aren't readable
+                pass
 
         page.on("response", on_response)
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(12000)  # let the app fetch its data
-        # Nudge lazy content.
-        page.mouse.wheel(0, 4000)
-        page.wait_for_timeout(5000)
-        visible = page.locator("body").inner_text()
+        page.wait_for_timeout(12000)
+        page.mouse.wheel(0, 6000)
+        page.wait_for_timeout(6000)
+
+        visible_text = page.locator("body").inner_text()
+        # Rendered-DOM extraction: anything that looks like a showtime button.
+        dom_links = page.eval_on_selector_all(
+            "a[href]",
+            "els => els.map(e => ({href: e.getAttribute('href'), text: (e.innerText||'').trim().slice(0,60)}))"
+            ".filter(l => /showtime|ticket|seat/i.test(l.href) || /^\\d{1,2}:\\d{2}\\s*[ap]m$/i.test(l.text))",
+        )
+        buttons = page.eval_on_selector_all(
+            "button",
+            "els => els.map(e => (e.innerText||'').trim()).filter(t => /^\\d{1,2}:\\d{2}\\s*[ap]m$/i.test(t)).slice(0,30)",
+        )
         browser.close()
 
-    print(f"Captured {len(captured)} non-asset responses.")
-    on_screen = needle in visible.lower()
-    print(f"Movie title visible on the rendered page: {'YES' if on_screen else 'NO'}")
+    print(f"\nCaptured {len(captured)} non-asset responses.")
+    print(f"Title visible in rendered page text: {'YES' if title.lower() in visible_text.lower() else 'NO'}")
+    clock_times = re.findall(r"\b\d{1,2}:\d{2}\s*[ap]m\b", visible_text, re.IGNORECASE)
+    print(f"Clock-time strings visible on page: {len(clock_times)} (sample: {clock_times[:6]})")
 
-    found = 0
+    # Derive the movie's numeric id from any response (slug like the-odyssey-76238).
+    movie_id = None
+    for _, _, _, body in captured:
+        m = re.search(r"the-odyssey-(\d+)", body, re.IGNORECASE)
+        if m:
+            movie_id = m.group(1)
+            break
+    print(f"Movie id derived from slug: {movie_id}")
+
+    needles = {
+        f"title '{title}'": re.compile(re.escape(title), re.IGNORECASE),
+        "movie id": re.compile(re.escape(movie_id)) if movie_id else None,
+        "showtime keys": re.compile(r"showDateTime|sessionDate|showtimeId|performanceNumber", re.IGNORECASE),
+        "booking links": re.compile(r"/showtimes/\d{5,}"),
+        "2026 timestamps": re.compile(r"2026-\d\d-\d\dT\d\d:(?!00:00\.000Z)"),
+    }
+
+    print("\n-- response inventory (top 25 by size), with signal flags:")
+    rows = sorted(captured, key=lambda r: -len(r[3]))[:25]
+    for method, u, mime, body in rows:
+        flags = [name for name, rx in needles.items() if rx and rx.search(body)]
+        mime_short = (mime or "?").split(";")[0]
+        print(f"   {len(body):>9,}B  {method:4} {mime_short:28} {u[:URL_TRIM]}")
+        if flags:
+            print(f"              signals: {', '.join(flags)}")
+
+    print("\n-- rendered-DOM showtime candidates:")
+    print(f"   links (href matches showtime/ticket/seat or text is a clock time): {len(dom_links)}")
+    for l in dom_links[:15]:
+        print(f"     {l.get('text','')!r} -> {l.get('href','')[:120]}")
+    print(f"   buttons with clock-time text: {len(buttons)}")
+    for b in buttons[:15]:
+        print(f"     {b!r}")
+
+    # Deep dive: any response with showtime keys or booking links gets sampled.
+    print("\n-- deep dive on responses with showtime signals:")
+    dove = 0
     for method, u, mime, body in captured:
-        if needle not in body.lower():
+        hits = [
+            name
+            for name, rx in needles.items()
+            if rx and name not in (f"title '{title}'",) and rx.search(body)
+        ]
+        if not hits:
             continue
-        found += 1
-        print(f"\n== HIT {found}: {method} {u[:160]}")
-        print(f"   response: {mime or '?'}, {len(body):,} bytes")
-        stripped = body.lstrip()
-        if stripped.startswith(("{", "[")):
-            try:
-                obj = json.loads(body)
-            except json.JSONDecodeError:
-                print("   (JSON-ish but not parseable as a whole)")
-                continue
-            keys = sorted(_json_keys(obj))
-            print(f"   JSON field names ({len(keys)}): {', '.join(keys[:25])}{' …' if len(keys) > 25 else ''}")
-            for path, sample in _find_showtime_samples(obj):
-                print(f"   showtime-shaped object at {path}:")
-                print(f"     {json.dumps(sample, default=str)[:500]}")
-        else:
-            # Non-JSON (document / RSC stream): show context around first title hit.
-            m = re.search(re.escape(cfg.movie_query), body, re.IGNORECASE)
+        dove += 1
+        print(f"\n   == {method} {u[:URL_TRIM]}")
+        print(f"      {mime.split(';')[0] if mime else '?'}, {len(body):,}B, signals: {', '.join(hits)}")
+        for name in hits:
+            m = needles[name].search(body)
             start = max(0, m.start() - 200)
-            ctx = re.sub(r"\s+", " ", body[start : m.end() + 400])
-            print(f"   context: …{ctx[:600]}…")
-            # And any ISO datetimes near showtime-looking content.
-            dates = sorted(set(re.findall(r"20\d\d-\d\d-\d\dT\d\d:\d\d[^\"'\\\s]{0,10}", body)))
-            if dates:
-                print(f"   ISO datetimes in this response ({len(dates)} unique): {', '.join(dates[:8])}")
+            ctx = re.sub(r"\s+", " ", body[start : m.end() + 300])
+            print(f"      [{name}] …{ctx[:450]}…")
+    if not dove:
+        print("   none")
 
-    if not found:
-        print(
-            "\nNo captured response contained the title. If the title WAS visible on the\n"
-            "rendered page (see above), the data hides in a response we couldn't read —\n"
-            "paste this whole report anyway."
-        )
-    else:
-        print("\nDone. Paste everything above back to the chat.")
+    # Where do visible clock times come from? Show counts of clock times per response.
+    print("\n-- clock-time density per response (top 5):")
+    density = Counter()
+    for i, (_, u, _, body) in enumerate(captured):
+        n = len(re.findall(r"\b\d{1,2}:\d{2}\s*[ap]m\b", body, re.IGNORECASE))
+        if n:
+            density[u[:URL_TRIM]] = n
+    for u, n in density.most_common(5):
+        print(f"   {n:4d}x  {u}")
+    if not density:
+        print("   no response contains clock-time strings at all")
+
+    print("\nDone. Paste everything above back to the chat.")
 
 
 if __name__ == "__main__":
