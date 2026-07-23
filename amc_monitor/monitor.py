@@ -192,6 +192,34 @@ def check_once(cfg: Config, client: AmcClient, notifier: Notifier | None, state:
     return sent, changed
 
 
+def send_test_text(cfg: Config) -> None:
+    """Send a one-off hello to every configured recipient to verify Twilio works."""
+    problems = cfg.validate_for_alerts()
+    # AMC settings aren't needed just to test texting.
+    problems = [p for p in problems if not p.startswith("AMC_THEATRE_ID")]
+    if problems:
+        print("Cannot send test — configuration problems:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        sys.exit(1)
+
+    body = (
+        "🎬 Test from your Odyssey 70mm bot!\n"
+        "This is the number that will text you when new AMC Lincoln Square "
+        "dates or seats open up. You're all set."
+    )
+    notifier = Notifier(cfg)
+    print(f"Sending test text to: {', '.join(cfg.alert_numbers)} …")
+    try:
+        sids = notifier.send(body)
+    except Exception as e:
+        print(f"[error] Twilio send failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    for number, sid in zip(cfg.alert_numbers, sids):
+        print(f"  ✓ queued to {number} (sid {sid})")
+    print("Done — texts should arrive within a few seconds.")
+
+
 def run(cfg: Config, once: bool = False, dry_run: bool = False) -> None:
     problems = [] if dry_run else cfg.validate_for_alerts()
     if problems:
@@ -236,9 +264,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Polite 70mm Odyssey seat-availability notifier.")
     parser.add_argument("--once", action="store_true", help="Run a single poll and exit (good for cron).")
     parser.add_argument("--dry-run", action="store_true", help="Poll and print alerts without sending texts.")
+    parser.add_argument(
+        "--test-text", action="store_true", help="Send a one-off test text to ALERT_NUMBERS and exit."
+    )
     args = parser.parse_args(argv)
 
     cfg = Config()
+    if args.test_text:
+        send_test_text(cfg)
+        return
     run(cfg, once=args.once, dry_run=args.dry_run)
 
 
