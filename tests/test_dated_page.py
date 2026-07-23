@@ -84,6 +84,7 @@ def _cfg():
     cfg.format_match = "70"
     cfg.alert_modes = ["new_date"]
     cfg.horizon_scan_days = 10
+    cfg.scan_start_days = 5
     return cfg
 
 
@@ -98,13 +99,23 @@ def _pages_through(*dates):
 def test_seed_scan_walks_until_horizon(_sleep, tmp_path):
     cfg = _cfg()
     cfg.sightings_path = str(tmp_path / "s.jsonl")
-    client = FakeDatedClient(_pages_through("2026-07-23", "2026-07-24", "2026-07-25"))
+    from datetime import date, timedelta
+
+    today = date.today()
+    # Listings end 2 days from today; scan starts 5 days out (past the horizon).
+    client = FakeDatedClient(
+        _pages_through(*[(today + timedelta(days=i)).isoformat() for i in range(3)])
+    )
     state = _fresh_state()
 
-    _scan_dated_pages(cfg, client, state)
-    # The walk starts at the real today and must terminate: either after 3
-    # consecutive empty days or at the horizon_scan_days cap.
-    assert 3 <= len(client.fetches) <= 10
+    out = _scan_dated_pages(cfg, client, state)
+
+    # Forward walk from +5 finds nothing (3 empties), then the backward walk
+    # from +4 discovers the true horizon at +2.
+    assert out, "backward walk must find the nearer horizon"
+    assert max(s.when_iso[:10] for s in out) == (today + timedelta(days=2)).isoformat()
+    assert client.fetches[:3] == [(today + timedelta(days=5 + i)).isoformat() for i in range(3)]
+    assert client.fetches[3:] == [(today + timedelta(days=4 - i)).isoformat() for i in range(3)]
 
 
 @mock.patch("time.sleep")

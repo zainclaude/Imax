@@ -234,7 +234,10 @@ def _scan_dated_pages(cfg: Config, client: AmcClient, state: dict) -> list[Showt
     if state["dates_seeded"] and not state["seen_dates"]:
         state["dates_seeded"] = False
     if not state["dates_seeded"]:
-        d = date.today()
+        # Start where the bookable frontier actually lives (~a month out for a
+        # hot limited run) and walk forward to find its edge.
+        start = date.today() + timedelta(days=cfg.scan_start_days)
+        d = start
         empty_streak = 0
         scanned = 0
         while scanned < cfg.horizon_scan_days and empty_streak < 3:
@@ -247,6 +250,18 @@ def _scan_dated_pages(cfg: Config, client: AmcClient, state: dict) -> list[Showt
             d += timedelta(days=1)
             scanned += 1
             time.sleep(2)  # gentle pacing within the one-time seed scan
+        if not out:
+            # Nothing at/after the start date — the horizon is nearer than
+            # expected. Walk backward until we find the last date with listings.
+            d = start - timedelta(days=1)
+            while d >= date.today():
+                found = day_matches(d)
+                scanned += 1
+                time.sleep(2)
+                if found:
+                    out.extend(found)
+                    break
+                d -= timedelta(days=1)
         print(f"[seed-scan] walked {scanned} days, found {len(out)} matching showtimes")
         return out
 

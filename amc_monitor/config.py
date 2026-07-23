@@ -72,6 +72,10 @@ class Config:
     showtimes_url: str | None = field(default_factory=lambda: os.getenv("AMC_SHOWTIMES_URL") or None)
     # How many days forward the one-time seed scan walks to find the horizon.
     horizon_scan_days: int = field(default_factory=lambda: int(os.getenv("HORIZON_SCAN_DAYS", "45")))
+    # Where the seed scan STARTS, in days from today. For a hot limited run the
+    # bookable frontier sits weeks out (near dates sold out or unlisted), so
+    # don't waste requests walking the near-term. Default 30.
+    scan_start_days: int = field(default_factory=lambda: int(os.getenv("SCAN_START_DAYS", "30")))
 
     # What to watch
     movie_query: str = field(default_factory=lambda: os.getenv("MOVIE_QUERY", "Odyssey"))

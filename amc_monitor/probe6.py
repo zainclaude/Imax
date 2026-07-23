@@ -66,8 +66,9 @@ def main() -> None:
     if len(sys.argv) > 1:
         dates = sys.argv[1:]
     else:
+        # The bookable frontier for a hot limited run sits ~a month out.
         t = date.today()
-        dates = [(t + timedelta(days=1)).isoformat(), (t + timedelta(days=3)).isoformat(), "2026-08-05"]
+        dates = [(t + timedelta(days=n)).isoformat() for n in (29, 30, 31)] + ["2026-08-05"]
 
     print(f"Probing {theatre_slug} as the monitor fetches (plain requests, honest UA)…")
     for d in dates:
