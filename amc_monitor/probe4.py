@@ -73,6 +73,21 @@ def main() -> None:
     entries = har.get("log", {}).get("entries", [])
     print(f"HAR has {len(entries)} requests. Searching responses for {cfg.movie_query!r} …")
 
+    # Sanity check: did the export include response bodies at all?
+    with_body = sum(1 for e in entries if (e.get("response", {}).get("content", {}) or {}).get("text"))
+    print(f"Responses with a captured body: {with_body}/{len(entries)}")
+    if with_body < max(3, len(entries) // 10):
+        print(
+            "\n!! Almost no response bodies in this HAR — Chrome's 'sanitized' export "
+            "strips them. Re-export a FULL har:\n"
+            "   1. DevTools gear icon (top right of DevTools) -> Preferences ->\n"
+            "      check 'Allow to generate HAR with sensitive data'\n"
+            "   2. Network tab -> reload page -> Export HAR -> now an option\n"
+            "      'Export HAR (with sensitive data)' appears — use it.\n"
+            "   Keep the file local (it may contain cookies); paste only this report."
+        )
+        return
+
     found = 0
     for e in entries:
         req = e.get("request", {})
@@ -112,12 +127,22 @@ def main() -> None:
             print("   (non-JSON response — probably the page document itself)")
 
     if not found:
-        print(
-            "\nNo non-asset responses contained the movie title. Either the "
-            "showtimes hadn't loaded before the HAR was exported (reload and "
-            "re-export after the times are visible), or the title only appears "
-            "inside .js bundles (tell me — different approach needed)."
-        )
+        print("\nNo non-asset data responses contained the title. Locations across ALL requests:")
+        any_hit = False
+        for e in entries:
+            content = e.get("response", {}).get("content", {}) or {}
+            text = content.get("text") or ""
+            if needle in text.lower():
+                any_hit = True
+                url = e.get("request", {}).get("url", "")
+                mime = content.get("mimeType", "?")
+                count = text.lower().count(needle)
+                print(f"   {count:4d}x  [{mime}]  {url[:140]}")
+        if not any_hit:
+            print(
+                "   none at all — the showtimes were not on screen when the HAR was\n"
+                "   exported. Reload, wait until you can SEE the showtimes, then export."
+            )
     else:
         print("\nDone. Paste everything above back to the chat (NOT the .har file).")
 
