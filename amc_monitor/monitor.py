@@ -18,7 +18,7 @@ import time
 from .amc_client import AmcClient, AntiBotChallenge, ApiKeyUnauthorized, Showtime, polite_fetch
 from .config import Config
 from .dates import local_date_of, pretty_date
-from .notifier import Notifier, format_alert, format_new_date_alert
+from .notifier import Notifier, format_alert, format_new_date_alert, sound_alarm
 from .seatmap import fetch_seatmap, find_adjacent_pairs
 from .sightings import new_sighting, record_sighting
 
@@ -64,9 +64,14 @@ def _matches_format(st: Showtime, needle: str) -> bool:
     return needle.lower() in (st.format_label or "").lower()
 
 
-def _emit(notifier: Notifier | None, body: str) -> bool:
-    """Print an alert and, if configured, send the text. True if it 'went out'."""
+def _emit(cfg: Config, notifier: Notifier | None, body: str) -> bool:
+    """Print an alert, sound the local alarm, and send it. True if it 'went out'.
+
+    The audible alarm fires for every real alert (never heartbeats) — phones on
+    Do Not Disturb miss pushes, but an unmuted Mac doesn't.
+    """
     print(f"[alert] {body!r}")
+    sound_alarm(cfg)
     if notifier is None:
         return True  # dry-run: treat as delivered so state advances
     try:
@@ -145,7 +150,7 @@ def _alert_new_dates(cfg: Config, notifier, state: dict, candidates: list[Showti
             len(shows),
             link,
         )
-        if _emit(notifier, body):
+        if _emit(cfg, notifier, body):
             state["seen_dates"] = sorted(set(state["seen_dates"]) | {d})
             seen_dates.add(d)
             sent += 1
@@ -178,7 +183,7 @@ def _alert_adjacent_pairs(cfg: Config, notifier, state: dict, candidates: list[S
         fmt = f"{st.format_label or '70mm'} (seats {a.row}{a.col}-{b.col})"
         link = st.purchase_url or st.seatmap_url
         body = format_alert(st.movie_title, fmt, st.when_iso or "showtime", link, True)
-        if _emit(notifier, body):
+        if _emit(cfg, notifier, body):
             state["alerted"][sig] = int(time.time())
             sent += 1
             changed = True
@@ -197,7 +202,7 @@ def _alert_any_showtime(cfg: Config, notifier, state: dict, candidates: list[Sho
             continue
         link = st.purchase_url or st.seatmap_url
         body = format_alert(st.movie_title, st.format_label or "70mm", st.when_iso or "showtime", link, False)
-        if _emit(notifier, body):
+        if _emit(cfg, notifier, body):
             state["alerted"][sig] = int(time.time())
             sent += 1
             changed = True
@@ -398,6 +403,7 @@ def simulate_drop(cfg: Config) -> None:
     )
     notifier = Notifier(cfg)
     print("Sending simulated new-date alert through all configured channels …")
+    sound_alarm(cfg)  # rehearse the local alarm too
     try:
         ids = notifier.send(body, subject="🧪 Odyssey bot — simulated alert")
     except Exception as e:

@@ -121,6 +121,20 @@ class Config:
     ntfy_topic: str | None = field(default_factory=lambda: os.getenv("NTFY_TOPIC") or None)
     ntfy_server: str = field(default_factory=lambda: os.getenv("NTFY_SERVER", "https://ntfy.sh"))
 
+    # Local audible alarm (macOS): when a REAL alert fires (new date / seats —
+    # not heartbeats), play a sound repeatedly and speak an announcement on this
+    # machine. Cuts through phone Do-Not-Disturb by using the computer instead.
+    alarm_enabled: bool = field(default_factory=lambda: _bool("LOCAL_ALARM", True))
+    alarm_sound: str = field(
+        default_factory=lambda: os.getenv("LOCAL_ALARM_SOUND", "/System/Library/Sounds/Sosumi.aiff")
+    )
+    alarm_say: str = field(
+        default_factory=lambda: os.getenv(
+            "LOCAL_ALARM_SAY", "New Odyssey date just dropped. Go book now!"
+        )
+    )
+    alarm_repeat: int = field(default_factory=lambda: int(os.getenv("LOCAL_ALARM_REPEAT", "4")))
+
     # Proof-of-life: push a status message every N hours reporting the furthest
     # bookable date ("still Aug 17"). If these stop arriving, the monitor is
     # down. Default 1 (hourly). Set HEARTBEAT_HOURS= (empty) to disable.
