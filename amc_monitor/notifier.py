@@ -140,19 +140,21 @@ def _send_ntfy(cfg: Config, title: str, body: str) -> str:
     return url
 
 
-def sound_alarm(cfg: Config) -> None:
+def sound_alarm(cfg: Config):
     """Audible local alarm (macOS): repeated sound + spoken announcement.
 
-    Runs in a daemon thread so the poll loop is never blocked. No-op on other
-    platforms or when LOCAL_ALARM=false. Plays at current system volume — an
-    unmuted Mac is part of the deal.
+    Runs in a daemon thread so the poll loop is never blocked; returns the
+    thread so short-lived commands (simulate/test) can join() it — otherwise
+    process exit kills the daemon thread before any sound plays. No-op (returns
+    None) off macOS or when LOCAL_ALARM=false. Plays relative to current system
+    volume — an unmuted Mac is part of the deal.
     """
     import platform
     import subprocess
     import threading
 
     if not cfg.alarm_enabled or platform.system() != "Darwin":
-        return
+        return None
 
     def _play():
         try:
@@ -163,7 +165,9 @@ def sound_alarm(cfg: Config) -> None:
         except Exception:
             pass  # a broken alarm must never take down the monitor
 
-    threading.Thread(target=_play, daemon=True).start()
+    t = threading.Thread(target=_play, daemon=True)
+    t.start()
+    return t
 
 
 class Notifier:

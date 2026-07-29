@@ -403,7 +403,7 @@ def simulate_drop(cfg: Config) -> None:
     )
     notifier = Notifier(cfg)
     print("Sending simulated new-date alert through all configured channels …")
-    sound_alarm(cfg)  # rehearse the local alarm too
+    alarm_thread = sound_alarm(cfg)  # rehearse the local alarm too
     try:
         ids = notifier.send(body, subject="🧪 Odyssey bot — simulated alert")
     except Exception as e:
@@ -411,7 +411,28 @@ def simulate_drop(cfg: Config) -> None:
         sys.exit(1)
     for i in ids:
         print(f"  ✓ {i}")
+    if alarm_thread:
+        print("(waiting for the local alarm to finish playing…)")
+        alarm_thread.join(timeout=90)
     print("This is exactly what a real drop will look like (minus the [TEST] tag).")
+
+
+def test_alarm(cfg: Config) -> None:
+    """Play the local alarm by itself — no pushes, no config needed."""
+    import platform
+
+    if platform.system() != "Darwin":
+        print("Local alarm is macOS-only (afplay/say). Nothing to test here.")
+        return
+    if not cfg.alarm_enabled:
+        print("LOCAL_ALARM=false — enable it in .env first.")
+        return
+    print(f"Playing: {cfg.alarm_sound} ×{cfg.alarm_repeat}, then saying: {cfg.alarm_say!r}")
+    print("(If you hear nothing: check the volume/mute keys — it plays relative to system volume.)")
+    t = sound_alarm(cfg)
+    if t:
+        t.join(timeout=90)
+    print("Done.")
 
 
 def send_test_text(cfg: Config) -> None:
@@ -499,9 +520,17 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Send a realistic fake 'new date' alert through the real channels and exit.",
     )
+    parser.add_argument(
+        "--test-alarm",
+        action="store_true",
+        help="Play the local audible alarm by itself (no pushes) and exit.",
+    )
     args = parser.parse_args(argv)
 
     cfg = Config()
+    if args.test_alarm:
+        test_alarm(cfg)
+        return
     if args.test_text:
         send_test_text(cfg)
         return
